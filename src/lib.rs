@@ -1,4 +1,7 @@
-use std::{ffi::OsString, fs::{self, File, OpenOptions, TryLockError}, path::{Path, PathBuf}};
+use std::{
+    fs::{self, File, OpenOptions, TryLockError},
+    path::{Path, PathBuf},
+};
 
 use anyhow::Context;
 use reflink_copy::reflink_or_copy;
@@ -7,37 +10,37 @@ use reflink_copy::reflink_or_copy;
 use std::os::windows::prelude::*;
 
 pub struct Client {
-    root: PathBuf
+    root: PathBuf,
 }
 
 impl Client {
     pub fn open<P: AsRef<Path>>(root: P) -> anyhow::Result<Self> {
         fs::create_dir_all(root.as_ref())?;
         Ok(Self {
-            root: root.as_ref().to_path_buf()
+            root: root.as_ref().to_path_buf(),
         })
     }
 
     pub fn read_file<P: AsRef<Path>>(&self, rpath: P) -> anyhow::Result<FileReadGaurd> {
-        let path= self.root.join(rpath.as_ref());
+        let path = self.root.join(rpath.as_ref());
         let lock = create_read_file_locks(&self.root, rpath)?;
         Ok(FileReadGaurd { path, lock })
     }
 
     pub fn read_dir<P: AsRef<Path>>(&self, rpath: P) -> anyhow::Result<DirGaurd> {
-        let path= self.root.join(rpath.as_ref());
+        let path = self.root.join(rpath.as_ref());
         let lock = create_read_file_locks(&self.root, rpath)?;
         Ok(DirGaurd { path, lock })
     }
 
     pub fn write_file<P: AsRef<Path>>(&self, rpath: P) -> anyhow::Result<FileWriteGaurd> {
-        let path= self.root.join(rpath.as_ref());
+        let path = self.root.join(rpath.as_ref());
         let lock = create_write_file_locks(&self.root, rpath)?;
         Ok(FileWriteGaurd { path, lock })
     }
 
     pub fn write_dir<P: AsRef<Path>>(&self, rpath: P) -> anyhow::Result<DirGaurd> {
-        let path= self.root.join(rpath.as_ref());
+        let path = self.root.join(rpath.as_ref());
         let lock = create_write_file_locks(&self.root, rpath)?;
         Ok(DirGaurd { path, lock })
     }
@@ -49,7 +52,13 @@ impl Client {
 fn create_read_file_locks<P: AsRef<Path>>(root: &PathBuf, rpath: P) -> anyhow::Result<Vec<Lock>> {
     let mut result = Vec::new();
 
-    for anc in rpath.as_ref().ancestors().collect::<Vec<_>>().into_iter().rev() {
+    for anc in rpath
+        .as_ref()
+        .ancestors()
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+    {
         let path = root.join(anc);
         result.push(Lock::Read(ReadLock::new(path)?))
     }
@@ -62,7 +71,14 @@ fn create_read_file_locks<P: AsRef<Path>>(root: &PathBuf, rpath: P) -> anyhow::R
 fn create_write_file_locks<P: AsRef<Path>>(root: &PathBuf, rpath: P) -> anyhow::Result<Vec<Lock>> {
     let mut result = Vec::new();
 
-    for anc in rpath.as_ref().ancestors().skip(1).collect::<Vec<_>>().into_iter().rev() {
+    for anc in rpath
+        .as_ref()
+        .ancestors()
+        .skip(1)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+    {
         let path = root.join(anc);
         result.push(Lock::Read(ReadLock::new(path)?))
     }
@@ -77,7 +93,7 @@ fn create_write_file_locks<P: AsRef<Path>>(root: &PathBuf, rpath: P) -> anyhow::
 
 pub struct FileReadGaurd {
     pub path: PathBuf,
-    lock: Vec<Lock>
+    lock: Vec<Lock>,
 }
 
 impl FileReadGaurd {
@@ -93,7 +109,7 @@ impl FileReadGaurd {
 pub struct CowFileGaurd {
     pub path: PathBuf,
     tmp: PathBuf,
-    pub file: File
+    pub file: File,
 }
 
 impl CowFileGaurd {
@@ -106,7 +122,7 @@ impl CowFileGaurd {
 
 pub struct FileWriteGaurd {
     pub path: PathBuf,
-    lock: Vec<Lock>
+    lock: Vec<Lock>,
 }
 
 impl FileWriteGaurd {
@@ -128,21 +144,25 @@ impl FileWriteGaurd {
             .create(true)
             .open(&tmp)
             .context("failed to open")?;
-        Ok(CowFileGaurd { 
-            path: self.path.clone(), 
-            tmp, 
-            file
+        Ok(CowFileGaurd {
+            path: self.path.clone(),
+            tmp,
+            file,
         })
     }
 }
 
 pub struct DirGaurd {
     pub path: PathBuf,
-    lock: Vec<Lock>
+    lock: Vec<Lock>,
 }
 
 fn path_with_extension<P: AsRef<Path>>(path: P, ext: &str) -> anyhow::Result<PathBuf> {
-    let mut name = path.as_ref().file_name().context("not a valid path")?.to_os_string();
+    let mut name = path
+        .as_ref()
+        .file_name()
+        .context("not a valid path")?
+        .to_os_string();
     name.push(ext);
     let parent = path.as_ref().parent().context("needs a parent")?;
     Ok(parent.join(name))
@@ -156,7 +176,6 @@ const FILE_SHARE_DELETE: u32 = 0x00000004;
 
 #[cfg(windows)]
 pub fn get_lock_and_wwrite<P: AsRef<Path>>(path: P) -> anyhow::Result<(File, File)> {
-
     let path_lock = path_with_extension(&path, ".lock")?;
     let path_wwrite = path_with_extension(&path, ".wwrite")?;
 
@@ -199,12 +218,11 @@ pub fn get_lock_and_wwrite<P: AsRef<Path>>(path: P) -> anyhow::Result<(File, Fil
 
 pub enum Lock {
     Read(ReadLock),
-    Write(WriteLock)
+    Write(WriteLock),
 }
 
-
 pub struct ReadLock {
-    lock: File
+    lock: File,
 }
 
 impl ReadLock {
@@ -228,7 +246,7 @@ impl Drop for ReadLock {
 }
 
 pub struct WriteLock {
-    lock: File
+    lock: File,
 }
 
 impl WriteLock {
@@ -236,15 +254,13 @@ impl WriteLock {
         let (lock, wwrite) = get_lock_and_wwrite(path)?;
 
         match lock.try_lock() {
-            Ok(()) => {},
+            Ok(()) => {}
             Err(TryLockError::WouldBlock) => {
                 wwrite.lock()?;
                 lock.lock()?;
                 wwrite.unlock()?;
-            },
-            e => {
-                e.context("failed to try lock")?
             }
+            e => e.context("failed to try lock")?,
         }
 
         Ok(Self { lock })
@@ -261,7 +277,14 @@ impl Drop for WriteLock {
 
 #[cfg(test)]
 mod test {
-    use std::{sync::{Arc, Mutex, atomic::{AtomicU64, Ordering}}, thread, time::Duration};
+    use std::{
+        sync::{
+            Arc, Mutex,
+            atomic::{AtomicU64, Ordering},
+        },
+        thread,
+        time::Duration,
+    };
 
     use rand::Rng;
 
