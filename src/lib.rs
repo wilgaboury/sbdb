@@ -19,24 +19,28 @@ impl Client {
     }
 
     pub fn read_file<P: AsRef<Path>>(&self, rpath: P) -> anyhow::Result<FileReadGaurd> {
-        // TODO: this is wrong, have to lock all parents
         let path= self.root.join(rpath.as_ref());
         let lock = create_read_file_locks(&self.root, rpath)?;
         Ok(FileReadGaurd { path, lock })
     }
 
-    // TODO
-    // pub fn read_dir();
+    pub fn read_dir<P: AsRef<Path>>(&self, rpath: P) -> anyhow::Result<DirGaurd> {
+        let path= self.root.join(rpath.as_ref());
+        let lock = create_read_file_locks(&self.root, rpath)?;
+        Ok(DirGaurd { path, lock })
+    }
 
     pub fn write_file<P: AsRef<Path>>(&self, rpath: P) -> anyhow::Result<FileWriteGaurd> {
-        // TODO: this is wrong, have to lock all parents
         let path= self.root.join(rpath.as_ref());
         let lock = create_write_file_locks(&self.root, rpath)?;
         Ok(FileWriteGaurd { path, lock })
     }
 
-    // TODO
-    // pub fn write_dir();
+    pub fn write_dir<P: AsRef<Path>>(&self, rpath: P) -> anyhow::Result<DirGaurd> {
+        let path= self.root.join(rpath.as_ref());
+        let lock = create_write_file_locks(&self.root, rpath)?;
+        Ok(DirGaurd { path, lock })
+    }
 
     // TODO
     // pub fn tx();
@@ -72,7 +76,7 @@ fn create_write_file_locks<P: AsRef<Path>>(root: &PathBuf, rpath: P) -> anyhow::
 }
 
 pub struct FileReadGaurd {
-    path: PathBuf,
+    pub path: PathBuf,
     lock: Vec<Lock>
 }
 
@@ -87,7 +91,7 @@ impl FileReadGaurd {
 }
 
 pub struct CowFileGaurd {
-    path: PathBuf,
+    pub path: PathBuf,
     tmp: PathBuf,
     pub file: File
 }
@@ -101,7 +105,7 @@ impl CowFileGaurd {
 }
 
 pub struct FileWriteGaurd {
-    path: PathBuf,
+    pub path: PathBuf,
     lock: Vec<Lock>
 }
 
@@ -130,6 +134,11 @@ impl FileWriteGaurd {
             file
         })
     }
+}
+
+pub struct DirGaurd {
+    pub path: PathBuf,
+    lock: Vec<Lock>
 }
 
 fn path_with_extension<P: AsRef<Path>>(path: P, ext: &str) -> anyhow::Result<PathBuf> {
