@@ -1,18 +1,21 @@
-# FSDB - F\*\*king Simple Database
+# FSDB - FileSystem DataBase
+
+Turn your filesystem into a transactional database.
 
 ## Why?
 
 - just a filesystem - provides massive flexibility and enormous amount of existing tooling for the underlying storage engine
-- lightweight - database essentially just a handful of functions for structured sychronization of file operations
+- lightweight - essentially just a handful of functions for structured sychronization of file operations
 - embedded - all operations occur in-process
-- concurrent - multiple processes can safely "connect" and perform operations on the same database
+- concurrent - multiple processes can safely operate on the same database
 - because I thought it was a cool idea 😎
 
 ## Why not?
 
-- Low write throughput on single nodes, i.e. many concurrent modification to one file/directory.
+- operations on file contents are not non-atomic by default; althought, the library provides utilities for helping with that at the cost of performance
+- High tail latencies caused by lock contention
 - Slow list/scan operations
-- Spartan programming (some people might like this) - the database makes only minimal attempts at protecting users from themselves.
+- Minimal/unsafe - the database makes little effort in trying to protect users from themselves.
 
 ## Show me Code
 
@@ -24,19 +27,19 @@ fn main() {
     let dir = gaurd.open();
     drop(gaurd);
 
-    let gaurd db.write_file("/some/dir");
+    let gaurd = db.write_file("/some/dir");
     let file = gaurd.open();
     drop(gaurd);
 
-    let gaurd = db.tx()
+    let tx = db.tx()
         .reads("/file1")
         .writes("/file2");
-    let n = file_read_int("/file1");
+    let n = file_read_int(tx, "/file1");
     if (n > 1) {
         let n = if n % 2 == 0 { n/2 } else { 3*n + 1 };
-        file_write_int("/file1", n);
+        file_write_int(tx, "/file1", n);
     }
-    drop(gaurd);
+    drop(tx);
 }
 ```
 

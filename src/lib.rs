@@ -14,20 +14,20 @@ impl Client {
         })
     }
 
-    pub fn read_file<P: AsRef<Path>>(&self, path: P) -> anyhow::Result<FileReadGaurd> {
+    pub fn read_file<P: AsRef<Path>>(&self, rpath: P) -> anyhow::Result<FileReadGaurd> {
         // TODO: this is wrong, have to lock all parents
-        let path= self.root.join(path.as_ref());
-        let lock = ReadLock::new(&path)?;
+        let path= self.root.join(rpath.as_ref());
+        let lock = create_read_file_locks(&self.root, rpath)?;
         Ok(FileReadGaurd { path, lock })
     }
 
     // TODO
     // pub fn read_dir();
 
-    pub fn write_file<P: AsRef<Path>>(&self, path: P) -> anyhow::Result<FileWriteGaurd> {
+    pub fn write_file<P: AsRef<Path>>(&self, rpath: P) -> anyhow::Result<FileWriteGaurd> {
         // TODO: this is wrong, have to lock all parents
-        let path= self.root.join(path.as_ref());
-        let lock = WriteLock::new(&path)?;
+        let path= self.root.join(rpath.as_ref());
+        let lock = create_write_file_locks(&self.root, rpath)?;
         Ok(FileWriteGaurd { path, lock })
     }
 
@@ -38,9 +38,38 @@ impl Client {
     // pub fn tx();
 }
 
+fn create_read_file_locks<P: AsRef<Path>>(root: &PathBuf, rpath: P) -> anyhow::Result<Vec<Lock>> {
+    let mut result = Vec::new();
+
+    for anc in rpath.as_ref().ancestors().collect::<Vec<_>>().into_iter().rev() {
+        let path = root.join(anc);
+        result.push(Lock::Read(ReadLock::new(path)?))
+    }
+
+    result.reverse();
+
+    Ok(result)
+}
+
+fn create_write_file_locks<P: AsRef<Path>>(root: &PathBuf, rpath: P) -> anyhow::Result<Vec<Lock>> {
+    let mut result = Vec::new();
+
+    for anc in rpath.as_ref().ancestors().skip(1).collect::<Vec<_>>().into_iter().rev() {
+        let path = root.join(anc);
+        result.push(Lock::Read(ReadLock::new(path)?))
+    }
+
+    let path = root.join(rpath);
+    result.push(Lock::Write(WriteLock::new(path)?));
+
+    result.reverse();
+
+    Ok(result)
+}
+
 pub struct FileReadGaurd {
     path: PathBuf,
-    lock: ReadLock
+    lock: Vec<Lock>
 }
 
 impl FileReadGaurd {
@@ -55,7 +84,7 @@ impl FileReadGaurd {
 
 pub struct FileWriteGaurd {
     path: PathBuf,
-    lock: WriteLock
+    lock: Vec<Lock>
 }
 
 impl FileWriteGaurd {
@@ -67,11 +96,6 @@ impl FileWriteGaurd {
             .open(&self.path)
             .context("failed to open")
     }
-}
-
-
-pub struct ReadLock {
-    lock: File
 }
 
 pub fn get_lock_and_wwrite<P: AsRef<Path>>(path: P) -> anyhow::Result<(File, File)> {
@@ -98,6 +122,16 @@ pub fn get_lock_and_wwrite<P: AsRef<Path>>(path: P) -> anyhow::Result<(File, Fil
             .context("could not open wwrite file")?;
 
         Ok((lock, wwrite))
+}
+
+pub enum Lock {
+    Read(ReadLock),
+    Write(WriteLock)
+}
+
+
+pub struct ReadLock {
+    lock: File
 }
 
 impl ReadLock {
@@ -160,17 +194,4 @@ impl Drop for WriteLock {
             eprint!("{:?}", e);
         }
     }
-}
-
-pub enum Lock {
-    Read(ReadLock),
-    Write(WriteLock)
-}
-
-pub struct MultiLock {
-    locks: Vec<Lock>
-}
-
-impl MultiLock {
-
 }
