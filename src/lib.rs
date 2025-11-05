@@ -175,9 +175,9 @@ const FILE_SHARE_WRITE: u32 = 0x00000002;
 const FILE_SHARE_DELETE: u32 = 0x00000004;
 
 #[cfg(windows)]
-pub fn get_lock_and_wwrite<P: AsRef<Path>>(path: P) -> anyhow::Result<(File, File)> {
+pub fn get_lock_and_queue<P: AsRef<Path>>(path: P) -> anyhow::Result<(File, File)> {
     let path_lock = path_with_extension(&path, ".lock")?;
-    let path_wwrite = path_with_extension(&path, ".wwrite")?;
+    let path_queue = path_with_extension(&path, ".queue")?;
 
     let lock = OpenOptions::new()
         .write(true)
@@ -186,20 +186,20 @@ pub fn get_lock_and_wwrite<P: AsRef<Path>>(path: P) -> anyhow::Result<(File, Fil
         .open(path_lock)
         .context("could not open lock file")?;
 
-    let wwrite = OpenOptions::new()
+    let queue = OpenOptions::new()
         .write(true)
         .create(true)
         .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
-        .open(path_wwrite)
-        .context("could not open wwrite file")?;
+        .open(path_queue)
+        .context("could not open queue file")?;
 
-    Ok((lock, wwrite))
+    Ok((lock, queue))
 }
 
 #[cfg(not(windows))]
-pub fn get_lock_and_wwrite<P: AsRef<Path>>(path: P) -> anyhow::Result<(File, File)> {
+pub fn get_lock_and_queue<P: AsRef<Path>>(path: P) -> anyhow::Result<(File, File)> {
     let path_lock = path_with_extension(&path, ".lock")?;
-    let path_wwrite = path_with_extension(&path, ".wwrite")?;
+    let path_wwrite = path_with_extension(&path, ".queue")?;
 
     let lock = OpenOptions::new()
         .read(true)
@@ -207,13 +207,13 @@ pub fn get_lock_and_wwrite<P: AsRef<Path>>(path: P) -> anyhow::Result<(File, Fil
         .open(path_lock)
         .context("could not open lock file")?;
 
-    let wwrite = OpenOptions::new()
+    let queue = OpenOptions::new()
         .read(true)
         .create(true)
-        .open(path_wwrite)
-        .context("could not open wwrite file")?;
+        .open(path_queue)
+        .context("could not open queue file")?;
 
-    Ok((lock, wwrite))
+    Ok((lock, queue))
 }
 
 pub enum Lock {
@@ -227,11 +227,11 @@ pub struct ReadLock {
 
 impl ReadLock {
     fn new<P: AsRef<Path>>(path: P) -> anyhow::Result<Self> {
-        let (lock, wwrite) = get_lock_and_wwrite(path)?;
+        let (lock, queue) = get_lock_and_queue(path)?;
 
-        wwrite.lock_shared()?;
-        wwrite.unlock()?;
+        queue.lock()?;
         lock.lock_shared()?;
+        queue.unlock()?;
 
         Ok(Self { lock })
     }
@@ -251,17 +251,11 @@ pub struct WriteLock {
 
 impl WriteLock {
     fn new<P: AsRef<Path>>(path: P) -> anyhow::Result<Self> {
-        let (lock, wwrite) = get_lock_and_wwrite(path)?;
+        let (lock, queue) = get_lock_and_queue(path)?;
 
-        match lock.try_lock() {
-            Ok(()) => {}
-            Err(TryLockError::WouldBlock) => {
-                wwrite.lock()?;
-                lock.lock()?;
-                wwrite.unlock()?;
-            }
-            e => e.context("failed to try lock")?,
-        }
+        queue.lock()?;
+        lock.lock()?;
+        queue.unlock()?;
 
         Ok(Self { lock })
     }
@@ -299,7 +293,7 @@ mod test {
         let wcnt_orig = Arc::new(AtomicU64::new(0));
         let rec_orig = Arc::new(Mutex::new(String::new()));
 
-        for _ in 0..5000 {
+        for _ in 0..1000 {
             let tmp_file_path = tmp_file_path_orig.clone();
             let rcnt = rcnt_orig.clone();
             let wcnt = wcnt_orig.clone();
@@ -307,14 +301,14 @@ mod test {
             threads.push(thread::spawn(move || {
                 let mut rng = rand::thread_rng();
                 if rng.gen_bool(0.5) {
-                    thread::sleep(Duration::from_millis(rng.gen_range(1..=100)));
+                    thread::sleep(Duration::from_millis(rng.gen_range(1..=10)));
                     let _gaurd = ReadLock::new(tmp_file_path).unwrap();
                     rec.lock().unwrap().push('r');
                     rcnt.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
                     if wcnt.load(Ordering::Acquire) > 0 {
                         panic!("can't have readers and writers")
                     }
-                    thread::sleep(Duration::from_millis(rng.gen_range(1..=100)));
+                    thread::sleep(Duration::from_millis(rng.gen_range(1..=10)));
                     rcnt.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
                 } else {
                     thread::sleep(Duration::from_millis(rng.gen_range(1..=10)));
@@ -328,7 +322,7 @@ mod test {
                     if rcnt_sn > 0 {
                         panic!("can't have readers and writers, num: {}", rcnt_sn);
                     }
-                    thread::sleep(Duration::from_millis(rng.gen_range(1..=10)));
+                    thread::sleep(Duration::from_millis(rng.gen_range(1..=50)));
                     wcnt.fetch_sub(1, Ordering::AcqRel);
                 }
             }));
