@@ -3,6 +3,9 @@ use std::{ffi::OsString, fs::{self, File, OpenOptions, TryLockError}, path::{Pat
 use anyhow::Context;
 use reflink_copy::reflink_or_copy;
 
+#[cfg(windows)]
+use std::os::windows::prelude::*;
+
 pub struct Client {
     root: PathBuf
 }
@@ -135,26 +138,54 @@ fn path_with_extension<P: AsRef<Path>>(path: P, ext: &str) -> anyhow::Result<Pat
     let parent = path.as_ref().parent().context("needs a parent")?;
     Ok(parent.join(name))
 }
+#[cfg(windows)]
+const FILE_SHARE_READ: u32 = 0x00000001;
+#[cfg(windows)]
+const FILE_SHARE_WRITE: u32 = 0x00000002;
+#[cfg(windows)]
+const FILE_SHARE_DELETE: u32 = 0x00000004;
 
+#[cfg(windows)]
 pub fn get_lock_and_wwrite<P: AsRef<Path>>(path: P) -> anyhow::Result<(File, File)> {
 
+    let path_lock = path_with_extension(&path, ".lock")?;
+    let path_wwrite = path_with_extension(&path, ".wwrite")?;
 
-        let path_lock = path_with_extension(&path, ".lock")?;
-        let path_wwrite = path_with_extension(&path, ".wwrite")?;
+    let lock = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .open(path_lock)
+        .context("could not open lock file")?;
 
-        let lock = OpenOptions::new()
-            .read(true)
-            .create(true)
-            .open(path_lock)
-            .context("could not open lock file")?;
+    let wwrite = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .open(path_wwrite)
+        .context("could not open wwrite file")?;
 
-        let wwrite = OpenOptions::new()
-            .read(true)
-            .create(true)
-            .open(path_wwrite)
-            .context("could not open wwrite file")?;
+    Ok((lock, wwrite))
+}
 
-        Ok((lock, wwrite))
+#[cfg(not(windows))]
+pub fn get_lock_and_wwrite<P: AsRef<Path>>(path: P) -> anyhow::Result<(File, File)> {
+    let path_lock = path_with_extension(&path, ".lock")?;
+    let path_wwrite = path_with_extension(&path, ".wwrite")?;
+
+    let lock = OpenOptions::new()
+        .read(true)
+        .create(true)
+        .open(path_lock)
+        .context("could not open lock file")?;
+
+    let wwrite = OpenOptions::new()
+        .read(true)
+        .create(true)
+        .open(path_wwrite)
+        .context("could not open wwrite file")?;
+
+    Ok((lock, wwrite))
 }
 
 pub enum Lock {
@@ -171,18 +202,8 @@ impl ReadLock {
     fn new<P: AsRef<Path>>(path: P) -> anyhow::Result<Self> {
         let (lock, wwrite) = get_lock_and_wwrite(path)?;
 
-        match wwrite.try_lock_shared() {
-            Ok(()) => {
-                wwrite.unlock()?;
-            },
-            Err(TryLockError::WouldBlock) => {
-                wwrite.lock_shared()?;
-            },
-            e => {
-                e.context("failed to try lock")?
-            }
-        }
-
+        wwrite.lock_shared()?;
+        wwrite.unlock()?;
         lock.lock_shared()?;
 
         Ok(Self { lock })
@@ -226,5 +247,68 @@ impl Drop for WriteLock {
         if let Err(e) = self.lock.unlock().context("failed to unlock") {
             eprint!("{:?}", e);
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use std::{sync::{Arc, Mutex, atomic::{AtomicU64, Ordering}}, thread, time::Duration};
+
+    use rand::Rng;
+
+    use crate::{ReadLock, WriteLock};
+
+    #[test]
+    fn fuzz_test_mixed_locking() {
+        let mut threads = Vec::new();
+        let tmp_dir = std::env::temp_dir();
+        let tmp_file_path_orig = tmp_dir.join("my_temp_file.txt");
+        let rcnt_orig = Arc::new(AtomicU64::new(0));
+        let wcnt_orig = Arc::new(AtomicU64::new(0));
+        let rec_orig = Arc::new(Mutex::new(String::new()));
+
+        for _ in 0..5000 {
+            let tmp_file_path = tmp_file_path_orig.clone();
+            let rcnt = rcnt_orig.clone();
+            let wcnt = wcnt_orig.clone();
+            let rec = rec_orig.clone();
+            threads.push(thread::spawn(move || {
+                let mut rng = rand::thread_rng();
+                if rng.gen_bool(0.5) {
+                    thread::sleep(Duration::from_millis(rng.gen_range(1..=100)));
+                    let _gaurd = ReadLock::new(tmp_file_path).unwrap();
+                    rec.lock().unwrap().push('r');
+                    rcnt.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+                    if wcnt.load(Ordering::Acquire) > 0 {
+                        panic!("can't have readers and writers")
+                    }
+                    thread::sleep(Duration::from_millis(rng.gen_range(1..=100)));
+                    rcnt.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+                } else {
+                    thread::sleep(Duration::from_millis(rng.gen_range(1..=10)));
+                    let _gaurd = WriteLock::new(tmp_file_path).unwrap();
+                    rec.lock().unwrap().push('w');
+                    let wcnt_sn = wcnt.fetch_add(1, Ordering::AcqRel);
+                    if wcnt_sn > 0 {
+                        panic!("can't have multiple concurrent writers, num: {}", wcnt_sn);
+                    }
+                    let rcnt_sn = rcnt.load(Ordering::Acquire);
+                    if rcnt_sn > 0 {
+                        panic!("can't have readers and writers, num: {}", rcnt_sn);
+                    }
+                    thread::sleep(Duration::from_millis(rng.gen_range(1..=10)));
+                    wcnt.fetch_sub(1, Ordering::AcqRel);
+                }
+            }));
+        }
+
+        for thread in threads {
+            match thread.join() {
+                Ok(_) => (),
+                Err(_) => panic!("Thread had error!"),
+            }
+        }
+
+        println!("{}", rec_orig.lock().unwrap().as_str());
     }
 }
