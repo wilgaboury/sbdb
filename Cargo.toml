@@ -5,3 +5,4 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1.0.100"
+reflink-copy = "=0.1.27"

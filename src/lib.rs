@@ -1,6 +1,7 @@
-use std::{fs::{self, File, OpenOptions, TryLockError}, path::{Path, PathBuf}};
+use std::{ffi::OsString, fs::{self, File, OpenOptions, TryLockError}, path::{Path, PathBuf}};
 
 use anyhow::Context;
+use reflink_copy::reflink_or_copy;
 
 pub struct Client {
     root: PathBuf
@@ -82,6 +83,20 @@ impl FileReadGaurd {
     }
 }
 
+pub struct CowFileGaurd {
+    path: PathBuf,
+    tmp: PathBuf,
+    pub file: File
+}
+
+impl CowFileGaurd {
+    pub fn commit(self) -> anyhow::Result<()> {
+        fs::rename(&self.tmp, &self.path)?;
+        drop(self);
+        Ok(())
+    }
+}
+
 pub struct FileWriteGaurd {
     path: PathBuf,
     lock: Vec<Lock>
@@ -96,18 +111,36 @@ impl FileWriteGaurd {
             .open(&self.path)
             .context("failed to open")
     }
+
+    pub fn open_cp(&self) -> anyhow::Result<CowFileGaurd> {
+        let tmp = path_with_extension(&self.path, ".tmp")?;
+        reflink_or_copy(&self.path, &tmp)?;
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .open(&tmp)
+            .context("failed to open")?;
+        Ok(CowFileGaurd { 
+            path: self.path.clone(), 
+            tmp, 
+            file
+        })
+    }
+}
+
+fn path_with_extension<P: AsRef<Path>>(path: P, ext: &str) -> anyhow::Result<PathBuf> {
+    let mut name = path.as_ref().file_name().context("not a valid path")?.to_os_string();
+    name.push(ext);
+    let parent = path.as_ref().parent().context("needs a parent")?;
+    Ok(parent.join(name))
 }
 
 pub fn get_lock_and_wwrite<P: AsRef<Path>>(path: P) -> anyhow::Result<(File, File)> {
-        let name = path.as_ref().file_name().context("not a valid path")?.to_os_string();
-        let mut name_lock = name.clone();
-        name_lock.push(".lock");
-        let mut name_wwrite = name.clone();
-        name_wwrite.push(".wwrite");
 
-        let parent = path.as_ref().parent().context("needs a parent")?;
-        let path_lock = parent.join(name_lock);
-        let path_wwrite = parent.join(name_wwrite);
+
+        let path_lock = path_with_extension(&path, ".lock")?;
+        let path_wwrite = path_with_extension(&path, ".wwrite")?;
 
         let lock = OpenOptions::new()
             .read(true)
