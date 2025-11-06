@@ -68,13 +68,13 @@ impl TxBuilder {
         }
     }
 
-    pub fn read<P: AsRef<Path>>(&mut self, path: P) -> &mut TxBuilder {
+    pub fn read<P: AsRef<Path>>(mut self, path: P) -> Self {
         self.entries
             .push(TxEntry::Read(path.as_ref().to_path_buf()));
         self
     }
 
-    pub fn write<P: AsRef<Path>>(&mut self, path: P) -> &mut TxBuilder {
+    pub fn write<P: AsRef<Path>>(mut self, path: P) -> Self {
         self.entries
             .push(TxEntry::Read(path.as_ref().to_path_buf()));
         self
@@ -437,7 +437,7 @@ mod test {
     fn test_readme_example() -> anyhow::Result<()> {
         let tmp_dir = std::env::temp_dir();
         let some_dir = tmp_dir.join("/some/dir");
-        fs::create_dir_all(tmp_dir)?;
+        fs::create_dir_all(&tmp_dir)?;
         let created = fs::metadata(some_dir).context("could not get metadata")?.created()?;
 
         let db = Client::new(tmp_dir)?;
@@ -456,8 +456,8 @@ mod test {
         {
             let gaurd = db.write_file("/bruh")?;
             let cp = gaurd.open_cp()?;
-            fs::write(cp.path, "some content");
-            cp.commit();
+            fs::write(&cp.path, "some content")?;
+            cp.commit()?;
         }
 
         {
@@ -468,7 +468,9 @@ mod test {
             let n = fs::read_to_string("/collatz_in")?.trim().parse::<i64>()?;
             if n > 1 {
                 let n = if n % 2 == 0 { n/2 } else { 3*n + 1 };
-                tx.open_file_cp("/bruh")
+                let cp = tx.open_file_cp("/collatz_out")?;
+                fs::write(&cp.path, n.to_string())?;
+                cp.commit()?;
             }
         }
 
