@@ -3,8 +3,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use anyhow::Context;
+use anyhow::{Context, anyhow};
 use reflink_copy::reflink_or_copy;
+use uuid::Uuid;
 
 #[cfg(windows)]
 use std::os::windows::prelude::*;
@@ -14,7 +15,7 @@ pub struct Client {
 }
 
 impl Client {
-    pub fn open<P: AsRef<Path>>(root: P) -> anyhow::Result<Self> {
+    pub fn new<P: AsRef<Path>>(root: P) -> anyhow::Result<Self> {
         fs::create_dir_all(root.as_ref())?;
         Ok(Self {
             root: root.as_ref().to_path_buf(),
@@ -27,10 +28,10 @@ impl Client {
         Ok(FileReadGaurd { path, lock })
     }
 
-    pub fn read_dir<P: AsRef<Path>>(&self, rpath: P) -> anyhow::Result<DirGaurd> {
+    pub fn read_dir<P: AsRef<Path>>(&self, rpath: P) -> anyhow::Result<DirReadGaurd> {
         let path = self.root.join(rpath.as_ref());
         let lock = create_read_file_locks(&self.root, rpath)?;
-        Ok(DirGaurd { path, lock })
+        Ok(DirReadGaurd { path, lock })
     }
 
     pub fn write_file<P: AsRef<Path>>(&self, rpath: P) -> anyhow::Result<FileWriteGaurd> {
@@ -39,14 +40,64 @@ impl Client {
         Ok(FileWriteGaurd { path, lock })
     }
 
-    pub fn write_dir<P: AsRef<Path>>(&self, rpath: P) -> anyhow::Result<DirGaurd> {
+    pub fn write_dir<P: AsRef<Path>>(&self, rpath: P) -> anyhow::Result<DirWriteGaurd> {
         let path = self.root.join(rpath.as_ref());
         let lock = create_write_file_locks(&self.root, rpath)?;
-        Ok(DirGaurd { path, lock })
+        Ok(DirWriteGaurd { path, lock })
     }
 
-    // TODO
-    // pub fn tx();
+    pub fn tx(&self) -> TxBuilder {
+        TxBuilder::new(self.root.clone())
+    }
+}
+
+pub enum TxEntry {
+    Read(PathBuf),
+    Write(PathBuf),
+}
+pub struct TxBuilder {
+    root: PathBuf,
+    entries: Vec<TxEntry>,
+}
+
+impl TxBuilder {
+    pub fn new(root: PathBuf) -> Self {
+        Self {
+            root,
+            entries: Vec::new(),
+        }
+    }
+
+    pub fn read<P: AsRef<Path>>(&mut self, path: P) -> &mut TxBuilder {
+        self.entries
+            .push(TxEntry::Read(path.as_ref().to_path_buf()));
+        self
+    }
+
+    pub fn write<P: AsRef<Path>>(&mut self, path: P) -> &mut TxBuilder {
+        self.entries
+            .push(TxEntry::Read(path.as_ref().to_path_buf()));
+        self
+    }
+
+    pub fn begin(self) -> anyhow::Result<Tx> {
+        // TODO: add merge lock logic
+        Ok(Tx { root: self.root.clone(), lock: Vec::new() })
+    }
+}
+
+pub struct Tx {
+    root: PathBuf,
+    lock: Vec<Lock>,
+}
+
+impl Tx {
+    pub fn open_file_cp<P: AsRef<Path>>(&self, orig: P) -> anyhow::Result<CowFileGaurd> {
+        open_file_cp(self.root.join(orig))
+    }
+
+    // TODO: implement
+    // pub fn open_dir_cp
 }
 
 fn create_read_file_locks<P: AsRef<Path>>(root: &PathBuf, rpath: P) -> anyhow::Result<Vec<Lock>> {
@@ -106,15 +157,9 @@ impl FileReadGaurd {
     }
 }
 
-pub struct CowFileGaurd {
-    pub path: PathBuf,
-    tmp: PathBuf,
-    pub file: File,
-}
-
 impl CowFileGaurd {
     pub fn commit(self) -> anyhow::Result<()> {
-        fs::rename(&self.tmp, &self.path)?;
+        fs::rename(&self.path, &self.orig)?;
         drop(self);
         Ok(())
     }
@@ -136,25 +181,76 @@ impl FileWriteGaurd {
     }
 
     pub fn open_cp(&self) -> anyhow::Result<CowFileGaurd> {
-        let tmp = path_with_extension(&self.path, ".tmp")?;
-        reflink_or_copy(&self.path, &tmp)?;
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .open(&tmp)
-            .context("failed to open")?;
-        Ok(CowFileGaurd {
-            path: self.path.clone(),
-            tmp,
-            file,
+        open_file_cp(&self.path)
+    }
+}
+
+pub fn open_file_cp<P: AsRef<Path>>(orig: P) -> anyhow::Result<CowFileGaurd> {
+    let path = path_with_extension(&orig, ".tmp")?;
+    reflink_or_copy(&orig, &path)?;
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .open(&path)
+        .context("failed to open")?;
+    Ok(CowFileGaurd {
+        path,
+        orig: orig.as_ref().to_path_buf(),
+        file,
+    })
+}
+
+pub struct CowFileGaurd {
+    pub path: PathBuf,
+    orig: PathBuf,
+    pub file: File,
+}
+
+pub struct DirReadGaurd {
+    pub path: PathBuf,
+    lock: Vec<Lock>,
+}
+
+pub struct DirWriteGaurd {
+    pub path: PathBuf,
+    lock: Vec<Lock>,
+}
+
+impl DirWriteGaurd {
+    pub fn cp(&self) -> anyhow::Result<CowDirGaurd> {
+        let path = path_with_extension(&self.path, ".tmp")?;
+        reflink_or_copy(&self.path, &path)?;
+        Ok(CowDirGaurd {
+            path,
+            orig: self.path.clone(),
         })
     }
 }
 
-pub struct DirGaurd {
+pub struct CowDirGaurd {
     pub path: PathBuf,
-    lock: Vec<Lock>,
+    orig: PathBuf,
+}
+
+impl CowDirGaurd {
+    /// Directory commits are not strictly atomic because rename cannot be used to target a
+    /// non-empty directory. This means commits are implemented as two rename operations, first
+    /// the target is renamed as a backup, then the copy is renamed to place at the original
+    /// location. The only way for the database to be left in an inconsistent state is if a
+    /// catastrophic failure occurs between these two renames.
+    pub fn commit(self) -> anyhow::Result<()> {
+        let mut ext = ".bak".to_string();
+        ext.push_str(Uuid::new_v4().to_string().as_str());
+        let bak = path_with_extension(&self.path, ext.as_str())?;
+        fs::rename(&self.orig, &bak)?;
+        if let Err(e) = fs::rename(&self.path, &self.orig) {
+            fs::rename(&bak, &self.orig)?;
+            return Err(anyhow!(e));
+        }
+        fs::remove_dir_all(&bak)?;
+        Ok(())
+    }
 }
 
 fn path_with_extension<P: AsRef<Path>>(path: P, ext: &str) -> anyhow::Result<PathBuf> {
@@ -272,17 +368,16 @@ impl Drop for WriteLock {
 #[cfg(test)]
 mod test {
     use std::{
-        sync::{
+        fs, sync::{
             Arc, Mutex,
             atomic::{AtomicU64, Ordering},
-        },
-        thread,
-        time::Duration,
+        }, thread, time::Duration
     };
 
+    use anyhow::Context;
     use rand::Rng;
 
-    use crate::{ReadLock, WriteLock};
+    use crate::{Client, ReadLock, WriteLock};
 
     #[test]
     fn fuzz_test_mixed_locking() {
@@ -303,7 +398,7 @@ mod test {
                 if rng.gen_bool(0.5) {
                     thread::sleep(Duration::from_millis(rng.gen_range(1..=10)));
                     let _gaurd = ReadLock::new(tmp_file_path).unwrap();
-                    rec.lock().unwrap().push('r');
+                    // rec.lock().unwrap().push('r');
                     rcnt.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
                     if wcnt.load(Ordering::Acquire) > 0 {
                         panic!("can't have readers and writers")
@@ -313,7 +408,7 @@ mod test {
                 } else {
                     thread::sleep(Duration::from_millis(rng.gen_range(1..=10)));
                     let _gaurd = WriteLock::new(tmp_file_path).unwrap();
-                    rec.lock().unwrap().push('w');
+                    // rec.lock().unwrap().push('w');
                     let wcnt_sn = wcnt.fetch_add(1, Ordering::AcqRel);
                     if wcnt_sn > 0 {
                         panic!("can't have multiple concurrent writers, num: {}", wcnt_sn);
@@ -336,5 +431,47 @@ mod test {
         }
 
         println!("{}", rec_orig.lock().unwrap().as_str());
+    }
+
+    #[test]
+    fn test_readme_example() -> anyhow::Result<()> {
+        let tmp_dir = std::env::temp_dir();
+        let some_dir = tmp_dir.join("/some/dir");
+        fs::create_dir_all(tmp_dir)?;
+        let created = fs::metadata(some_dir).context("could not get metadata")?.created()?;
+
+        let db = Client::new(tmp_dir)?;
+
+        {
+            let gaurd = db.read_dir("/some/dir")?;
+            let metadata = fs::metadata(gaurd.path).context("could not get metadata")?;
+            assert_eq!(created, metadata.created()?);
+        }
+
+        {
+            let gaurd = db.write_dir("/some/dir");
+            fs::create_dir("/some/dir/new")?;
+        }
+
+        {
+            let gaurd = db.write_file("/bruh")?;
+            let cp = gaurd.open_cp()?;
+            fs::write(cp.path, "some content");
+            cp.commit();
+        }
+
+        {
+            let tx = db.tx()
+                .read("/collatz_in")
+                .write("/collatz_out")
+                .begin()?;
+            let n = fs::read_to_string("/collatz_in")?.trim().parse::<i64>()?;
+            if n > 1 {
+                let n = if n % 2 == 0 { n/2 } else { 3*n + 1 };
+                tx.open_file_cp("/bruh")
+            }
+        }
+
+        Ok(())
     }
 }

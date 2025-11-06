@@ -21,7 +21,7 @@ Turn your filesystem into a transactional database.
 
 ```rust
 fn main() {
-    let db = FsdbClient::from_str("/my/database/location");
+    let db = Client::new("/my/database/location");
 
     let gaurd = db.read_dir("/some/dir");
     let dir = gaurd.open();
