@@ -45,16 +45,50 @@ fn main() {
 
 ## How Does It Work
 
-This article is an introduction to and explination of FSDB. Complex features and usage will not be covered thoroughly; instead, we will gradually explore the systems and intuitions behind how it works. It's important to know where we are headed, so to reiterate and expand on the tagline: FSDB is a transactional, concurrent, embedded, key/value database that utilyzes the filesystem as it's storage engine.
+This article is an introduction to and explination of FSDB. Features and usage will not be covered thoroughly; instead, we will gradually explore the systems and intuitions behind how it works. It's important to know where we are headed, so to reiterate and expand on the tagline: FSDB is a transactional, concurrent, embedded database that utilyzes the filesystem as it's storage engine.
 
-Before getting too complicated, let's consider how we can safley read and write a single file from multiple processes. Operating systems (like Windows and Linux) have file locking APIs for multi-reader/single-writer file locking. In the pseudocode of this article we will use the hypothetical functions `lock_shared/unlock_shared` and `lock_exclusive/unlock_exclusive`. It may seem sufficent to simply use these functions, but the problem is that operating systems do not typically garuntee that these locks are fair. Meaning, if a file is constantly being read, the shared lock will always be taken and patiently waiting writers will block indefitely. In a concurrent database, the possibility of writers never making forward progress is not acceptable.
+### File Locking
 
-In order for readers to occationally cede precedence to writers, there needs to be a way for prospective readers to know that there are writers waiting before taking a shared lock. We'll say that adjacent to our file in question, there is a new file called _filename_.wwait, shorthand for "writer wating". Writer's will first take an exclusive lock on the writer waiting file before taking an exclusive lock on the file itself. Prospective readers, instead of greedily trying to take a shared lock on the file before doing work, will first take and immediatley release a shared lock on the writer waiting file.
+Let's start by considering how we can safely read and write a single file from multiple processes. Operating systems (like Windows and Linux) have file locking APIs for multi-reader/single-writer file locking. In the pseudocode of this article we will use the hypothetical functions `lock_shared/unlock_shared` and `lock_exclusive/unlock_exclusive`. It may seem sufficent to simply use these functions, but the problem is that operating systems do not garuntee that mixed reading and writing is fair. If, for instance, a file is constantly being read, the shared lock will always be taken and patiently waiting writers will block indefitely. In a database, the possibility of writers never making forward progress is not acceptable.
 
-But now we have the opposite problem. If writers are constantly changeing a file, it's possible that readers will be permanantly starved. Thankfully, now that readers know about writers, they can simply choose to be less nice. By adding a wait timeout on readers taking a shared lock on .wwait, readers can choose to become greedy if they have been waiting around for too long.
+In order for add fairness between readers and writers, we will introduce an adjacent file called `_filename_.queue`. Before either a reader or writer attempts to lock the file, it will first take an exclusive lock on the queue file, then immediatley release it once it aquires the file lock (see pseudo-code below). By forcing an initial exclusive synchronization point, incoming concurrent readers and writers will both have an equal chance of making forward progress. While this does come with a performance penalty, in a database, well behaved concurrency with steady throughput is generally preferable over lopsided read/write throughput and exploding tail latencies.
 
-We've now solved locking a single node but what about when we need to lock many nodes for a transaction. We need to make sure that we don't cause deadlocks when doing so: for instance transaction1 takes a write lock on file1 then file2 and transaction2 takes a write lock on file2 then file1, if these transactions interleve each one will be stuck waiting forever to lock their second file. If we put in place a global ordering on locks, then problem solved, and thankfully we can order locks by lexographically sorting the filename.
+```rust
+fn lock_read(file) {
+    queue = file + ".queue"
+    lock_exclusive(queue)
+    lock_shared(file)
+    unlock_exclusive(queue)
+}
 
-Here's the final problem. Filesystems are hierachical so when we lock a given file we don't want other processes modifying the parent directory (i.e. renaming/deleting the file currently being written too). So whenever a lock on a node is taken, first a shared lock is taken on each parent directory starting from the root and going down to the target.
+fn lock_write(file) {
+    queue = file + ".queue"
+    lock_exclusive(queue)
+    lock_exclusive(file)
+    unlock_exclusive(queue)
+}
+```
 
-And that's it! If you understood all that, you don't even need this library. Go ahead and write your own version!
+### Directories
+
+In treating the filesystem as a database, we additionally need to consider reading and writing directories. Since directories can't be locked directly, we will simply have an adjacent file next to each directory called `_dirname_.lock`. Read and write locking on a single directory will then work exactly the same way as files.
+
+It's important to also note at this point that unlike most database systems, which are reletively flat, filesystems are hierarchical. When taking a read or write lock on a file or directory, concurrent modifications to the parent directory may cause problems. To remedy this, our lock procedure (read and write) will first take a shared lock on each parent directory starting from the root and going down to the target.
+
+```rust
+fn prepare_for_lock(root, target) {
+    for ancestor from root to target (exclusive) {
+        lock_read(ancestor)
+    }
+}
+```
+
+### Atomic Modification
+
+Even if an application does have an exclusive write lock on a file, modifying that file is inherently risky because filesystems generally only protect their metadata and make little attempt at preventing file content corruption, in the case of a sudden shutdown or failure for instance. We can minimize this problem, by instead mutating a copy of the file, then performing an atomic rename operation that overwrites the original file with the new version; for those unfimilar, this pattern is commonly referred to as copy on write.
+
+There is an unfortunate caviate for entire directories. While the atomic rename operation can be used to replace a non-empty file, it cannot be used for replacing non-empty directories. Instead, we must use two sequential rename operations: first, rename the original directory with a backup name, second rename the new directory to replace the original. While this is not strictly atomic, it minimizes the chance of corruption, and is significantly safer than performing a mutations on directory contents directly.
+
+I'd also like to make note here that making copies of files and directories will typically add considerable overhead, but some modern filesystems like Btrfs, XFS, APFS and others, actually use copy on write algorithms internally. This means that copy operations are fast and do not duplicate data on disk; modifications are essentially stored as a diff of the original contents.
+
+### Transactions
