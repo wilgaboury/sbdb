@@ -3,6 +3,8 @@ name = "sbdb"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.89"
+description = "helping out your filesystem"
+repository = "https://github.com/wilgaboury/sbdb"
 
 [dependencies]
 anyhow = "1.0.100"
