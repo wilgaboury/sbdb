@@ -380,7 +380,7 @@ pub fn get_lock_and_queue<P: AsRef<Path>>(path: P) -> anyhow::Result<(File, File
 #[cfg(not(windows))]
 pub fn get_lock_and_queue<P: AsRef<Path>>(path: P) -> anyhow::Result<(File, File)> {
     let path_lock = path_with_extension(&path, ".lock")?;
-    let path_wwrite = path_with_extension(&path, ".queue")?;
+    let path_queue = path_with_extension(&path, ".queue")?;
 
     let lock = OpenOptions::new()
         .read(true)
