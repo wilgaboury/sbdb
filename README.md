@@ -2,6 +2,7 @@
 
 [![Build Status](https://github.com/wilgaboury/sbdb/workflows/build/badge.svg)](https://github.com/wilgaboury/sbdb/actions)
 [![codecov](https://codecov.io/github/wilgaboury/sbdb/graph/badge.svg?token=9H65L60DGZ)](https://codecov.io/github/wilgaboury/sbdb)
+[![Casual Maintenance Intended](https://casuallymaintained.tech/badge.svg)](https://casuallymaintained.tech/)
 
 A transactional, concurrent, embedded database that utilyzes the filesystem as it's storage engine.
 
