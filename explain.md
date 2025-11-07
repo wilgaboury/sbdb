@@ -58,4 +58,4 @@ I see this database as filling a neglected niche for applications that need pers
 
 ### Addendum on Hierarchical Databases
 
-The tech nerd and history buff in me feels it necessary to mention that SubsidiaDB falls squarely into the now rarely mentioned category of hierarchical databases. These are the original NoSQL storage solutions, not because of modern trends, but because they predate relational algebra itself! IBM's IMS database is the most popular example and is still widely used in industries today.
+The tech nerd and history buff in me feels it necessary to mention that SubsidiaDB falls squarely into the now rarely mentioned category of hierarchical databases. These are the original NoSQL storage solutions because they came about in the 1960s and actually predate relational algebra itself! IBM's IMS (Information Management System) is the most popular example and is still widely used in industries today.
