@@ -26,7 +26,7 @@ fn lock_write(file) {
 
 ## Directories
 
-In treating the filesystem as a database, we additionally need to consider reading and writing directories (by writing I mean creating, deleting, or renaming a directories children). Since directories can't be locked, we will simply have an adjacent file next to each directory called `_dirname_.lock`. Read and write locking on a single directory will then work exactly the same way as files.
+In treating the filesystem as a database, we additionally need to consider reading and writing directories (by writing I mean creating, deleting, or renaming a directory's children). Since directories can't be locked, we will simply have an adjacent file next to each directory called `_dirname_.lock`. Read and write locking on a single directory will then work exactly the same way as files.
 
 It's important to also note at this point that unlike most database systems, which are relatively flat, filesystems are hierarchical. When taking a read or write lock on a file or directory, concurrent modifications to the parent directory may cause problems. To remedy this, our lock procedure (read and write) will first take a shared lock on each parent directory starting from the root and going down to the target.
 
