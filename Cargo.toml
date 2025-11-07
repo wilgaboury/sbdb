@@ -5,6 +5,7 @@ edition = "2024"
 rust-version = "1.89"
 description = "helping out your filesystem"
 repository = "https://github.com/wilgaboury/sbdb"
+license = "MIT"
 
 [dependencies]
 anyhow = "1.0.100"
