@@ -88,6 +88,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "42f5e15c9953c5e4ccceeb2e7382a716482c34515315f7b03532b8b4e8393d2d"
 
 [[package]]
+name = "path-dsl"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3d19dd56d2bd4b2e19d415532597c1b0366f096212a27980ac4115f29ebe0c74"
+
+[[package]]
 name = "ppv-lite86"
 version = "0.2.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -215,6 +221,7 @@ name = "sbdb"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "path-dsl",
  "rand 0.8.5",
  "reflink-copy",
  "uuid",

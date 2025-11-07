@@ -11,25 +11,43 @@ TODO: crates.io link
 ## Example
 
 ```rust
-fn main() {
-    let db = Client::new("/my/database/location");
+fn main() -> anyhow::Result<()> {
+    let db = Client::new("/my/db/path")?;
 
-    let gaurd = db.read_dir("/some/dir");
-    let dir = gaurd.open();
-    drop(gaurd);
-
-    let gaurd = db.write_file("/some/dir");
-    let file = gaurd.open();
-    drop(gaurd);
-
-    let tx = db.tx()
-        .reads("/file1")
-        .writes("/file2");
-    let n = file_read_int(tx, "/file1");
-    if (n > 1) {
-        let n = if n % 2 == 0 { n/2 } else { 3*n + 1 };
-        file_write_int(tx, "/file1", n);
+    {
+        let gaurd = db.read_dir(path!("some" | "dir"))?;
+        let metadata = fs::metadata(gaurd.path).context("could not get metadata")?;
     }
-    drop(tx);
+
+    {
+        let gaurd = db.write_dir(path!("some" | "dir"));
+        fs::create_dir(db.root.join(path!("some" | "dir" | "new")))?;
+    }
+
+    {
+        let gaurd = db.write_file("test_write.txt")?;
+        let cp = gaurd.open_cp()?;
+        fs::write(&cp.path, "some content")?;
+        cp.commit()?;
+    }
+
+    {
+        let tx = db
+            .tx()
+            .read("collatz_in.txt")
+            .write("collatz_out.txt")
+            .begin()?;
+        let n = fs::read_to_string(db.root.join("collatz_in.txt"))?
+            .trim()
+            .parse::<i64>()?;
+        if n > 1 {
+            let n = if n % 2 == 0 { n / 2 } else { 3 * n + 1 };
+            let cp = tx.open_file_cp("collatz_out.txt")?;
+            fs::write(&cp.path, n.to_string())?;
+            cp.commit()?;
+        }
+    }
+
+    Ok(())
 }
 ```

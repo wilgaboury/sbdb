@@ -26,7 +26,7 @@ fn lock_write(file) {
 
 ## Directories
 
-In treating the filesystem as a database, we additionally need to consider reading and writing directories. Since directories can't be locked directly, we will simply have an adjacent file next to each directory called `_dirname_.lock`. Read and write locking on a single directory will then work exactly the same way as files.
+In treating the filesystem as a database, we additionally need to consider reading and writing directories (by writing I mean creating, deleting, or renaming a directories children). Since directories can't be locked, we will simply have an adjacent file next to each directory called `_dirname_.lock`. Read and write locking on a single directory will then work exactly the same way as files.
 
 It's important to also note at this point that unlike most database systems, which are reletively flat, filesystems are hierarchical. When taking a read or write lock on a file or directory, concurrent modifications to the parent directory may cause problems. To remedy this, our lock procedure (read and write) will first take a shared lock on each parent directory starting from the root and going down to the target.
 
@@ -44,7 +44,7 @@ Even if an application does have an exclusive write lock on a file, modifying th
 
 There is an unfortunate caviate for entire directories. While the atomic rename operation can be used to replace a non-empty file, it cannot be used for replacing non-empty directories. Instead, we must use two sequential rename operations: first, rename the original directory with a backup name, second rename the new directory to replace the original. While this is not strictly atomic, it minimizes the chance of corruption, and is significantly safer than performing a mutations on directory contents directly.
 
-I'd also like to make note here that making copies of files and directories will typically add considerable overhead, but some modern filesystems like Btrfs, XFS, APFS and others, actually use copy on write algorithms internally. This means that copy operations are fast and do not duplicate data on disk; modifications are essentially stored as a diff of the original contents.
+I'd also like to make note here that making copies of files and directories will typically add considerable overhead, but some modern filesystems like Btrfs, XFS, APFS and others, actually have support for copy on write operations. This means performing a copy is is fast and does not duplicate data on disk; mutations are essentially stored as a diff of the original content.
 
 ## Transactions\*
 

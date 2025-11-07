@@ -1,5 +1,5 @@
 use std::{
-    fs::{self, File, OpenOptions, TryLockError},
+    fs::{self, File, OpenOptions},
     path::{Path, PathBuf},
 };
 
@@ -51,10 +51,36 @@ impl Client {
     }
 }
 
-pub enum TxEntry {
-    Read(PathBuf),
-    Write(PathBuf),
+pub enum TxEntryKind {
+    Read,
+    Write,
 }
+
+pub struct TxEntry {
+    kind: TxEntryKind,
+    path: PathBuf,
+}
+
+impl PartialOrd for TxEntry {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        self.path.partial_cmp(&other.path)
+    }
+}
+
+impl Ord for TxEntry {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.path.cmp(&other.path)
+    }
+}
+
+impl PartialEq for TxEntry {
+    fn eq(&self, other: &Self) -> bool {
+        self.path.eq(&other.path)
+    }
+}
+
+impl Eq for TxEntry {}
+
 pub struct TxBuilder {
     root: PathBuf,
     entries: Vec<TxEntry>,
@@ -69,20 +95,73 @@ impl TxBuilder {
     }
 
     pub fn read<P: AsRef<Path>>(mut self, path: P) -> Self {
-        self.entries
-            .push(TxEntry::Read(path.as_ref().to_path_buf()));
+        self.entries.push(TxEntry {
+            kind: TxEntryKind::Read,
+            path: self.root.join(path.as_ref()),
+        });
         self
     }
 
     pub fn write<P: AsRef<Path>>(mut self, path: P) -> Self {
-        self.entries
-            .push(TxEntry::Read(path.as_ref().to_path_buf()));
+        self.entries.push(TxEntry {
+            kind: TxEntryKind::Write,
+            path: self.root.join(path.as_ref()),
+        });
         self
     }
 
-    pub fn begin(self) -> anyhow::Result<Tx> {
-        // TODO: add merge lock logic
-        Ok(Tx { root: self.root.clone(), lock: Vec::new() })
+    pub fn begin(mut self) -> anyhow::Result<Tx> {
+        fn contains(entry: &TxEntry, test: &TxEntry) -> bool {
+            match entry.kind {
+                TxEntryKind::Read => match test.kind {
+                    TxEntryKind::Read => entry.path.starts_with(&test.path),
+                    TxEntryKind::Write => false,
+                },
+                TxEntryKind::Write => match test.kind {
+                    TxEntryKind::Read => {
+                        entry.path.starts_with(&test.path) || test.path.starts_with(&entry.path)
+                    }
+                    TxEntryKind::Write => entry.path.starts_with(&test.path),
+                },
+            }
+        }
+
+        {
+            let mut i = 0;
+            while i < self.entries.len() {
+                let mut j = 0;
+                while j < self.entries.len() {
+                    if i != j && contains(&self.entries[i], &self.entries[j]) {
+                        if i < j {
+                            self.entries.remove(j);
+                        } else {
+                            self.entries.remove(i);
+                            i -= 1;
+                        }
+                    } else {
+                        j += 1;
+                    }
+                }
+                i += 1;
+            }
+        }
+
+        self.entries.sort();
+
+        let mut lock = Vec::with_capacity(self.entries.len());
+        for e in self.entries {
+            lock.push(match e.kind {
+                TxEntryKind::Read => Lock::Read(ReadLock::new(e.path)?),
+                TxEntryKind::Write => Lock::Write(WriteLock::new(e.path)?),
+            });
+        }
+
+        lock.reverse();
+
+        Ok(Tx {
+            root: self.root.clone(),
+            lock,
+        })
     }
 }
 
@@ -96,8 +175,9 @@ impl Tx {
         open_file_cp(self.root.join(orig))
     }
 
-    // TODO: implement
-    // pub fn open_dir_cp
+    pub fn dir_cp<P: AsRef<Path>>(&self, orig: P) -> anyhow::Result<CowDirGaurd> {
+        dir_cp(self.root.join(orig))
+    }
 }
 
 fn create_read_file_locks<P: AsRef<Path>>(root: &PathBuf, rpath: P) -> anyhow::Result<Vec<Lock>> {
@@ -219,13 +299,17 @@ pub struct DirWriteGaurd {
 
 impl DirWriteGaurd {
     pub fn cp(&self) -> anyhow::Result<CowDirGaurd> {
-        let path = path_with_extension(&self.path, ".tmp")?;
-        reflink_or_copy(&self.path, &path)?;
-        Ok(CowDirGaurd {
-            path,
-            orig: self.path.clone(),
-        })
+        dir_cp(&self.path)
     }
+}
+
+fn dir_cp<P: AsRef<Path>>(orig: P) -> anyhow::Result<CowDirGaurd> {
+    let path = path_with_extension(&orig, ".tmp")?;
+    reflink_or_copy(&orig, &path)?;
+    Ok(CowDirGaurd {
+        path,
+        orig: orig.as_ref().to_path_buf(),
+    })
 }
 
 pub struct CowDirGaurd {
@@ -254,6 +338,7 @@ impl CowDirGaurd {
 }
 
 fn path_with_extension<P: AsRef<Path>>(path: P, ext: &str) -> anyhow::Result<PathBuf> {
+    eprintln!("{:?}", path.as_ref());
     let mut name = path
         .as_ref()
         .file_name()
@@ -368,14 +453,19 @@ impl Drop for WriteLock {
 #[cfg(test)]
 mod test {
     use std::{
-        fs, sync::{
+        fs::{self, File},
+        sync::{
             Arc, Mutex,
             atomic::{AtomicU64, Ordering},
-        }, thread, time::Duration
+        },
+        thread,
+        time::Duration,
     };
 
     use anyhow::Context;
+    use path_dsl::path;
     use rand::Rng;
+    use uuid::Uuid;
 
     use crate::{Client, ReadLock, WriteLock};
 
@@ -435,40 +525,51 @@ mod test {
 
     #[test]
     fn test_readme_example() -> anyhow::Result<()> {
-        let tmp_dir = std::env::temp_dir();
-        let some_dir = tmp_dir.join("/some/dir");
-        fs::create_dir_all(&tmp_dir)?;
-        let created = fs::metadata(some_dir).context("could not get metadata")?.created()?;
+        let tmp_dir = std::env::temp_dir()
+            .join("test_readme_example".to_string() + Uuid::new_v4().to_string().as_str());
+        let some_dir = tmp_dir.join(path!("some" | "dir"));
+        fs::create_dir_all(&some_dir)?;
+        let created = fs::metadata(some_dir)
+            .context("could not get metadata")?
+            .created()?;
+        eprint!("{:?}", tmp_dir.join("test_write.txt"));
+        File::create(tmp_dir.join("test_write.txt"))?;
+        File::create(tmp_dir.join("collatz_in.txt"))?;
+        fs::write(tmp_dir.join("collatz_in.txt"), "500")?;
+        File::create(tmp_dir.join("collatz_out.txt"))?;
 
         let db = Client::new(tmp_dir)?;
 
         {
-            let gaurd = db.read_dir("/some/dir")?;
+            let gaurd = db.read_dir(path!("some" | "dir"))?;
             let metadata = fs::metadata(gaurd.path).context("could not get metadata")?;
             assert_eq!(created, metadata.created()?);
         }
 
         {
-            let gaurd = db.write_dir("/some/dir");
-            fs::create_dir("/some/dir/new")?;
+            let gaurd = db.write_dir(path!("some" | "dir"));
+            fs::create_dir(db.root.join(path!("some" | "dir" | "new")))?;
         }
 
         {
-            let gaurd = db.write_file("/bruh")?;
+            let gaurd = db.write_file("test_write.txt")?;
             let cp = gaurd.open_cp()?;
             fs::write(&cp.path, "some content")?;
             cp.commit()?;
         }
 
         {
-            let tx = db.tx()
-                .read("/collatz_in")
-                .write("/collatz_out")
+            let tx = db
+                .tx()
+                .read("collatz_in.txt")
+                .write("collatz_out.txt")
                 .begin()?;
-            let n = fs::read_to_string("/collatz_in")?.trim().parse::<i64>()?;
+            let n = fs::read_to_string(db.root.join("collatz_in.txt"))?
+                .trim()
+                .parse::<i64>()?;
             if n > 1 {
-                let n = if n % 2 == 0 { n/2 } else { 3*n + 1 };
-                let cp = tx.open_file_cp("/collatz_out")?;
+                let n = if n % 2 == 0 { n / 2 } else { 3 * n + 1 };
+                let cp = tx.open_file_cp("collatz_out.txt")?;
                 fs::write(&cp.path, n.to_string())?;
                 cp.commit()?;
             }
