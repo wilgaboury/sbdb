@@ -42,9 +42,9 @@ fn prepare_for_lock(root, target) {
 
 Even if an application does have an exclusive write lock on a file, modifying that file is inherently risky because filesystems generally only protect their metadata and make little attempt at preventing file content corruption, in the case of a sudden shutdown or failure for instance. We can minimize this problem, by instead mutating a copy of the file, then performing an atomic rename operation that overwrites the original file with the new version; for those unfamiliar, this pattern is commonly referred to as copy on write.
 
-There is an unfortunate caveat for entire directories. While the atomic rename operation can be used to replace a non-empty file, it cannot be used for replacing non-empty directories. Instead, we must use two sequential rename operations: first, rename the original directory with a backup name; second, rename the new directory to replace the original. While this is not strictly atomic, it minimizes the chance of corruption, and is significantly safer than performing mutations on directly.
+There is an unfortunate caveat for entire directories. While the atomic rename operation can be used to replace a non-empty file, it cannot be used for replacing non-empty directories. Instead, we must use two sequential rename operations: first, rename the original directory with a backup name; second, rename the new directory to replace the original. While this is not strictly atomic, it minimizes the chance of corruption, and is significantly safer than performing mutations directly.
 
-I'd also like to make note here that making copies of files and directories will typically add considerable overhead, but some modern filesystems like Btrfs, XFS, APFS and others, actually have support for copy on write operations. This means performing a copy is fast and does not duplicate data on disk; mutations are essentially stored as a diff of the original content.
+I'd also like to note here that making copies of files and directories will typically add considerable overhead, but some modern filesystems like Btrfs, XFS, APFS and others, actually have support for copy on write operations. This means performing a copy is fast and does not duplicate data on disk; mutations are essentially stored as a diff of the original content.
 
 ## Transactions\*
 
