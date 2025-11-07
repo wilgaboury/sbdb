@@ -1,5 +1,8 @@
 # SubsidiaDB
 
+[![Build Status](https://github.com/wilgaboury/sbdb/workflows/build/badge.svg)](https://github.com/wilgaboury/sbdb/actions)
+[![codecov](https://codecov.io/github/wilgaboury/sbdb/graph/badge.svg?token=9H65L60DGZ)](https://codecov.io/github/wilgaboury/sbdb)
+
 A transactional, concurrent, embedded database that utilyzes the filesystem as it's storage engine.
 
 If you are looking for a explination of how SubsidiaDB works, try reading the included article: [Turning the Filesystem into a Database](./explain.md).
