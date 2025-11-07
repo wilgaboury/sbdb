@@ -4,10 +4,6 @@ A transactional, concurrent, embedded database that utilyzes the filesystem as i
 
 If you are looking for a explination of how SubsidiaDB works, try reading the included article: [Turning the Filesystem into a Database](./explain.md).
 
-## Use
-
-TODO: crates.io link
-
 ## Example
 
 ```rust
