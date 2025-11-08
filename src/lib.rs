@@ -383,13 +383,13 @@ pub fn get_lock_and_queue<P: AsRef<Path>>(path: P) -> anyhow::Result<(File, File
     let path_queue = path_with_extension(&path, ".queue")?;
 
     let lock = OpenOptions::new()
-        .read(true)
+        .write(true)
         .create(true)
         .open(path_lock)
         .context("could not open lock file")?;
 
     let queue = OpenOptions::new()
-        .read(true)
+        .write(true)
         .create(true)
         .open(path_queue)
         .context("could not open queue file")?;
