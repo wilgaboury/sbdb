@@ -333,7 +333,7 @@ impl DirWriteGaurd {
 
 fn dir_cp<P: AsRef<Path>>(orig: P) -> anyhow::Result<CowDirGaurd> {
     let path = path_with_extension(&orig, ".tmp")?;
-    reflink_or_copy(&orig, &path)?;
+    copy_recursive(&orig, &path)?;
     Ok(CowDirGaurd {
         path,
         orig: orig.as_ref().to_path_buf(),
@@ -346,8 +346,8 @@ fn dir_cp_atomic<P: AsRef<Path>>(parent: P) -> anyhow::Result<CowAtomicDirGaurd>
     let name = Uuid::new_v4().to_string();
     let path = parent.join(&name);
     if current.exists() { 
-        let orig = fs::read_link(current)?;
-        reflink_or_copy(&orig, &path)?;
+        let orig = parent.join(fs::read_link(current)?);
+        copy_recursive(&orig, &path)?;
         Ok(CowAtomicDirGaurd {
             parent,
             name,
@@ -399,15 +399,14 @@ pub struct CowAtomicDirGaurd {
 
 impl CowAtomicDirGaurd {
     pub fn commit(self) -> anyhow::Result<()> {
-        let orig_current = self.parent.join("current");
-        let current = self.parent.join("current.tmp"); // TODO: create in meta
+        let current = self.parent.join("current");
+        let current_tmp = self.parent.join("current.tmp"); // TODO: create in meta
 
-        let mut current_rel = PathBuf::from(".");
-        current_rel.push(self.name);
+        let mut current_rel = PathBuf::from(self.name);
 
         #[cfg(unix)]
         {
-            std::os::unix::fs::symlink(self.path, &current_rel)?;
+            std::os::unix::fs::symlink(&current_rel, &current_tmp)?;
         }
 
         #[cfg(windows)]
@@ -415,7 +414,8 @@ impl CowAtomicDirGaurd {
             std::os::windows::fs::symlink_dir(self.path, &current_rel)?;
         }
 
-        fs::rename(&current, orig_current)?;
+        // atomic commit
+        fs::rename(&current_tmp, current)?;
 
         if let Some(orig) = self.orig {
             if let Err(_e) = fs::remove_dir_all(orig) {
@@ -437,6 +437,7 @@ fn path_with_extension<P: AsRef<Path>>(path: P, ext: &str) -> anyhow::Result<Pat
     let parent = path.as_ref().parent().context("needs a parent")?;
     Ok(parent.join(name))
 }
+
 #[cfg(windows)]
 const FILE_SHARE_READ: u32 = 0x00000001;
 #[cfg(windows)]
@@ -534,9 +535,46 @@ impl WriteLock {
 impl Drop for WriteLock {
     fn drop(&mut self) {
         if let Err(e) = self.lock.unlock().context("failed to unlock") {
-            eprint!("{:?}", e);
+            eprintln!("{:?}", e);
         }
     }
+}
+
+fn copy_recursive(src: impl AsRef<Path>, dst: impl AsRef<Path>) -> anyhow::Result<()> {
+    let src = src.as_ref();
+    let dst = dst.as_ref();
+
+    // Create destination directory if it doesn't exist
+    fs::create_dir_all(dst)?;
+
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        let entry_path = entry.path();
+        let file_name = entry.file_name();
+        let dest_path = dst.join(file_name);
+
+        let file_type = entry.file_type()?;
+
+        if file_type.is_dir() {
+            copy_recursive(&entry_path, &dest_path)?;
+        } else if file_type.is_file() {
+            reflink_or_copy(&entry_path, &dest_path)?;
+        } else if file_type.is_symlink() {
+            let link_target = fs::read_link(&entry_path)?;
+            
+            #[cfg(unix)]
+            {
+                std::os::unix::fs::symlink(&link_target, &dest_path)?;
+            }
+            
+            #[cfg(windows)]
+            {
+                std::os::windows::fs::symlink_dir(&link_target, &dest_path)?;
+            }
+        }
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -687,7 +725,7 @@ mod test {
     }
 
     #[test]
-    // #[cfg(unix)]
+    #[cfg(unix)]
     fn test_basic_dir_cp_atomic() -> anyhow::Result<()> {
         let test_client = TestClient::new("test_basic_dir_cp_atomic")?;
         let db = &test_client.client;
