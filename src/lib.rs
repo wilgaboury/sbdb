@@ -178,6 +178,10 @@ impl Tx {
     pub fn dir_cp<P: AsRef<Path>>(&self, orig: P) -> anyhow::Result<CowDirGaurd> {
         dir_cp(self.root.join(orig))
     }
+    
+    pub fn dir_cp_atomic<P: AsRef<Path>>(&self, orig: P) -> anyhow::Result<CowAtomicDirGaurd> {
+        dir_cp_atomic(self.root.join(orig))
+    }
 }
 
 fn create_read_file_locks<P: AsRef<Path>>(root: &PathBuf, rpath: P) -> anyhow::Result<Vec<Lock>> {
@@ -301,6 +305,10 @@ impl DirWriteGaurd {
     pub fn cp(&self) -> anyhow::Result<CowDirGaurd> {
         dir_cp(&self.path)
     }
+
+    pub fn cp_atomic(&self) -> anyhow::Result<CowAtomicDirGaurd> {
+        dir_cp_atomic(&self.path)
+    }
 }
 
 fn dir_cp<P: AsRef<Path>>(orig: P) -> anyhow::Result<CowDirGaurd> {
@@ -310,6 +318,28 @@ fn dir_cp<P: AsRef<Path>>(orig: P) -> anyhow::Result<CowDirGaurd> {
         path,
         orig: orig.as_ref().to_path_buf(),
     })
+}
+
+fn dir_cp_atomic<P: AsRef<Path>>(parent: P) -> anyhow::Result<CowAtomicDirGaurd> {
+    let parent = parent.as_ref().to_path_buf();
+    let current = parent.join("current");
+    let path = parent.join(Uuid::new_v4().to_string());
+    if current.exists() { 
+        let orig = fs::read_link(current)?;
+        reflink_or_copy(&orig, &path)?;
+        Ok(CowAtomicDirGaurd {
+            parent,
+            path,
+            orig: Some(orig),
+        })
+    } else {
+        fs::create_dir_all(&path)?;
+        Ok(CowAtomicDirGaurd {
+            parent,
+            path,
+            orig: None,
+        })
+    }
 }
 
 pub struct CowDirGaurd {
@@ -333,6 +363,39 @@ impl CowDirGaurd {
             return Err(anyhow!(e));
         }
         fs::remove_dir_all(&bak)?;
+        Ok(())
+    }
+}
+
+pub struct CowAtomicDirGaurd {
+    parent: PathBuf,
+    pub path: PathBuf,
+    orig: Option<PathBuf>
+}
+
+impl CowAtomicDirGaurd {
+    pub fn commit(self) -> anyhow::Result<()> {
+        let orig_current = self.parent.join("current");
+        let current = self.parent.join("current.tmp"); // TODO: create in meta
+
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(self.path, &current)?;
+        }
+
+        #[cfg(windows)]
+        {
+            std::os::windows::fs::symlink_dir(self.path, &current)?;
+        }
+
+        fs::rename(&current, orig_current)?;
+
+        if let Some(orig) = self.orig {
+            if let Err(_e) = fs::remove_dir_all(orig) {
+                // swallow error, it does not indicate failed commit
+                // TODO: should log or do something
+            }
+        }
         Ok(())
     }
 }
