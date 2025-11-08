@@ -64,7 +64,7 @@ For multi-entry rollback, this may have already been apparent to some readers, b
 
 ## Conclusion
 
-I see this database as filling a neglected niche for applications that need persistent storage. As already expounded upon, filesystems by themselves do not offer the ACID guarantees needed for non-trivial resilient applications. Other embedded databases (like SQLite, RocksDB, LMDB, etc.) are more complex, and by using a single file, prevent truly concurrent multi-process writes. Full DBMSs are heavy on resources and incur higher operational burden; they are also not well suited for applications intending to be distributed and run by others as a single executable. SubsidiaDB is by no means better than these other solutions, but it brings a different set of tradeoffs to the table.
+I see this database as filling a neglected niche for applications that need persistent storage. As already expounded upon, filesystems by themselves do not offer the ACID guarantees needed for non-trivial resilient applications. Other embedded databases (like SQLite, RocksDB, LMDB, etc.) are more complex, and by using a single file, prevent truly concurrent multi-process writes. Full DBMSs are heavy on resources and incur higher operational burden; they are also not well suited for applications intending to be distributed and run by others as a single executable. SubsidiaDB is not strictly better than these other solutions but it brings a different set of tradeoffs to the table.
 
 ### Addendum on Hierarchical Databases
 
