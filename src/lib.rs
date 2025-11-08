@@ -563,7 +563,7 @@ mod test {
     impl TestClient {
         pub fn new(name: &str) -> anyhow::Result<Self> {
             let root = std::env::temp_dir()
-                .join(name.to_string() + Uuid::new_v4().to_string().as_str());
+                .join(name.to_string() + "-" + Uuid::new_v4().to_string().as_str());
             Ok(TestClient {
                 client: Client::new(&root)?,
                 root
@@ -687,7 +687,7 @@ mod test {
     }
 
     #[test]
-    #[cfg(unix)]
+    // #[cfg(unix)]
     fn test_basic_dir_cp_atomic() -> anyhow::Result<()> {
         let test_client = TestClient::new("test_basic_dir_cp_atomic")?;
         let db = &test_client.client;
@@ -711,8 +711,6 @@ mod test {
         }
 
         {
-            // TODO: using "." causes read lock and write lock on same directory, need to add some path normilization logic
-            // let gaurd = db.write_dir(".")?;
             let gaurd = db.write_dir("")?;
             let dir = gaurd.cp_atomic()?;
             let test_path = dir.path.join("child/test.txt");
