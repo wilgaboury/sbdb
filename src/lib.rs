@@ -715,7 +715,7 @@ mod test {
             // let gaurd = db.write_dir(".")?;
             let gaurd = db.write_dir("")?;
             let dir = gaurd.cp_atomic()?;
-            let test_path = child_path.join("child/test.txt");
+            let test_path = dir.path.join("child/test.txt");
             fs::write(&test_path, "test2")?;
             dir.commit()?;
         }
