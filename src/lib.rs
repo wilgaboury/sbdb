@@ -75,26 +75,6 @@ pub struct TxEntry {
     path: PathBuf,
 }
 
-impl PartialOrd for TxEntry {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        self.path.partial_cmp(&other.path)
-    }
-}
-
-impl Ord for TxEntry {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.path.cmp(&other.path)
-    }
-}
-
-impl PartialEq for TxEntry {
-    fn eq(&self, other: &Self) -> bool {
-        self.path.eq(&other.path)
-    }
-}
-
-impl Eq for TxEntry {}
-
 pub struct TxBuilder {
     root: PathBuf,
     entries: Vec<TxEntry>,
@@ -160,7 +140,7 @@ impl TxBuilder {
             }
         }
 
-        self.entries.sort();
+        self.entries.sort_by(|e1, e2| e1.path.cmp(&e2.path));
 
         let mut lock = Vec::with_capacity(self.entries.len());
         for e in self.entries {
@@ -274,7 +254,6 @@ impl FileWriteGaurd {
         OpenOptions::new()
             .read(true)
             .write(true)
-            .create(true)
             .open(&self.path)
             .context("failed to open")
     }
@@ -290,7 +269,6 @@ pub fn open_file_cp<P: AsRef<Path>>(orig: P) -> anyhow::Result<CowFileGaurd> {
     let file = OpenOptions::new()
         .read(true)
         .write(true)
-        .create(true)
         .open(&path)
         .context("failed to open")?;
     Ok(CowFileGaurd {
@@ -331,7 +309,7 @@ impl DirWriteGaurd {
     }
 }
 
-fn dir_cp<P: AsRef<Path>>(orig: P) -> anyhow::Result<CowDirGaurd> {
+pub fn dir_cp<P: AsRef<Path>>(orig: P) -> anyhow::Result<CowDirGaurd> {
     let path = path_with_extension(&orig, ".tmp")?;
     copy_recursive(&orig, &path)?;
     Ok(CowDirGaurd {
@@ -340,7 +318,7 @@ fn dir_cp<P: AsRef<Path>>(orig: P) -> anyhow::Result<CowDirGaurd> {
     })
 }
 
-fn dir_cp_atomic<P: AsRef<Path>>(parent: P) -> anyhow::Result<CowAtomicDirGaurd> {
+pub fn dir_cp_atomic<P: AsRef<Path>>(parent: P) -> anyhow::Result<CowAtomicDirGaurd> {
     let parent = parent.as_ref().to_path_buf();
     let current = parent.join("current");
     let name = Uuid::new_v4().to_string();
@@ -591,7 +569,7 @@ mod test {
     use rand::Rng;
     use uuid::Uuid;
 
-    use crate::{Client, ReadLock, WriteLock};
+    use crate::{Client, ReadLock, WriteLock, dir_cp_atomic};
 
     struct TestClient {
         pub client: Client,
@@ -726,38 +704,41 @@ mod test {
 
     #[test]
     #[cfg(unix)]
-    fn test_basic_dir_cp_atomic() -> anyhow::Result<()> {
-        let test_client = TestClient::new("test_basic_dir_cp_atomic")?;
+    fn test_dir_cp_atomic() -> anyhow::Result<()> {
+        let test_client = TestClient::new("test_dir_cp_atomic")?;
         let db = &test_client.client;
 
         {
             // TODO: using "." causes read lock and write lock on same directory, need to add some path normilization logic
             // let gaurd = db.write_dir(".")?;
+
             let gaurd = db.write_dir("")?;
             let dir = gaurd.cp_atomic()?;
-            let child_path = dir.path.join("child");
-            fs::create_dir_all(&child_path)?;
-            let test_path = child_path.join("test.txt");
+            let nested_path = dir.path.join("nested");
+            fs::create_dir(&nested_path)?;
+            dir_cp_atomic(&nested_path)?.commit()?;
+            let nested_cur_path = nested_path.join("current");
+            let test_path = nested_cur_path.join("test.txt");
             File::create(&test_path)?;
             fs::write(&test_path, "test1")?;
             dir.commit()?;
         }
 
         {
-            let gaurd = db.read_file("current/child/test.txt")?;
+            let gaurd = db.read_file("current/nested/current/test.txt")?;
             assert_eq!("test1", fs::read_to_string(gaurd.path)?);
         }
 
         {
             let gaurd = db.write_dir("")?;
             let dir = gaurd.cp_atomic()?;
-            let test_path = dir.path.join("child/test.txt");
+            let test_path = dir.path.join("nested/current/test.txt");
             fs::write(&test_path, "test2")?;
             dir.commit()?;
         }
 
         {
-            let gaurd = db.read_file("current/child/test.txt")?;
+            let gaurd = db.read_file("current/nested/current/test.txt")?;
             assert_eq!("test2", fs::read_to_string(gaurd.path)?);
         }
 
