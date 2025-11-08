@@ -10,15 +10,25 @@ use uuid::Uuid;
 #[cfg(windows)]
 use std::os::windows::prelude::*;
 
+#[derive(Clone, Debug)]
 pub struct Client {
+    parent: PathBuf,
     root: PathBuf,
+    meta: PathBuf
 }
 
 impl Client {
-    pub fn new<P: AsRef<Path>>(root: P) -> anyhow::Result<Self> {
-        fs::create_dir_all(root.as_ref())?;
-        Ok(Self {
-            root: root.as_ref().to_path_buf(),
+    pub fn new<P: AsRef<Path>>(parent: P) -> anyhow::Result<Self> {
+        let parent: PathBuf = parent.as_ref().to_path_buf();
+        let root = parent.join("root");
+        let meta = parent.join("meta");
+        fs::create_dir_all(&parent)?;
+        fs::create_dir_all(&root)?;
+        fs::create_dir_all(&meta)?;
+        Ok(Self { 
+            parent,
+            root,
+            meta
         })
     }
 
@@ -48,6 +58,10 @@ impl Client {
 
     pub fn tx(&self) -> TxBuilder {
         TxBuilder::new(self.root.clone())
+    }
+
+    pub fn root(&self) -> &PathBuf {
+        &self.root
     }
 }
 
@@ -219,6 +233,7 @@ fn create_write_file_locks<P: AsRef<Path>>(root: &PathBuf, rpath: P) -> anyhow::
     }
 
     let path = root.join(rpath);
+    eprintln!("{:?}", path);
     result.push(Lock::Write(WriteLock::new(path)?));
 
     result.reverse();
@@ -306,6 +321,11 @@ impl DirWriteGaurd {
         dir_cp(&self.path)
     }
 
+    /// platform specific behavior:
+    /// 
+    /// This feature uses symbolic links, which windows supports, but only in developer mode
+    /// or with escalated privlages. For that reason it should probably be avoided if you would
+    /// like to have cross-platform support.
     pub fn cp_atomic(&self) -> anyhow::Result<CowAtomicDirGaurd> {
         dir_cp_atomic(&self.path)
     }
@@ -323,12 +343,14 @@ fn dir_cp<P: AsRef<Path>>(orig: P) -> anyhow::Result<CowDirGaurd> {
 fn dir_cp_atomic<P: AsRef<Path>>(parent: P) -> anyhow::Result<CowAtomicDirGaurd> {
     let parent = parent.as_ref().to_path_buf();
     let current = parent.join("current");
-    let path = parent.join(Uuid::new_v4().to_string());
+    let name = Uuid::new_v4().to_string();
+    let path = parent.join(&name);
     if current.exists() { 
         let orig = fs::read_link(current)?;
         reflink_or_copy(&orig, &path)?;
         Ok(CowAtomicDirGaurd {
             parent,
+            name,
             path,
             orig: Some(orig),
         })
@@ -336,6 +358,7 @@ fn dir_cp_atomic<P: AsRef<Path>>(parent: P) -> anyhow::Result<CowAtomicDirGaurd>
         fs::create_dir_all(&path)?;
         Ok(CowAtomicDirGaurd {
             parent,
+            name,
             path,
             orig: None,
         })
@@ -369,6 +392,7 @@ impl CowDirGaurd {
 
 pub struct CowAtomicDirGaurd {
     parent: PathBuf,
+    name: String,
     pub path: PathBuf,
     orig: Option<PathBuf>
 }
@@ -378,14 +402,17 @@ impl CowAtomicDirGaurd {
         let orig_current = self.parent.join("current");
         let current = self.parent.join("current.tmp"); // TODO: create in meta
 
+        let mut current_rel = PathBuf::from(".");
+        current_rel.push(self.name);
+
         #[cfg(unix)]
         {
-            std::os::unix::fs::symlink(self.path, &current)?;
+            std::os::unix::fs::symlink(self.path, &current_rel)?;
         }
 
         #[cfg(windows)]
         {
-            std::os::windows::fs::symlink_dir(self.path, &current)?;
+            std::os::windows::fs::symlink_dir(self.path, &current_rel)?;
         }
 
         fs::rename(&current, orig_current)?;
@@ -401,7 +428,6 @@ impl CowAtomicDirGaurd {
 }
 
 fn path_with_extension<P: AsRef<Path>>(path: P, ext: &str) -> anyhow::Result<PathBuf> {
-    eprintln!("{:?}", path.as_ref());
     let mut name = path
         .as_ref()
         .file_name()
@@ -516,13 +542,10 @@ impl Drop for WriteLock {
 #[cfg(test)]
 mod test {
     use std::{
-        fs::{self, File},
-        sync::{
+        fs::{self, File}, path::PathBuf, sync::{
             Arc, Mutex,
             atomic::{AtomicU64, Ordering},
-        },
-        thread,
-        time::Duration,
+        }, thread, time::Duration
     };
 
     use anyhow::Context;
@@ -531,6 +554,28 @@ mod test {
     use uuid::Uuid;
 
     use crate::{Client, ReadLock, WriteLock};
+
+    struct TestClient {
+        pub client: Client,
+        root: PathBuf
+    }
+
+    impl TestClient {
+        pub fn new(name: &str) -> anyhow::Result<Self> {
+            let root = std::env::temp_dir()
+                .join(name.to_string() + Uuid::new_v4().to_string().as_str());
+            Ok(TestClient {
+                client: Client::new(&root)?,
+                root
+            })
+        }
+    }
+
+    impl Drop for TestClient {
+        fn drop(&mut self) {
+            fs::remove_dir_all(&self.root);
+        }
+    }
 
     #[test]
     fn fuzz_test_mixed_locking() {
@@ -588,20 +633,20 @@ mod test {
 
     #[test]
     fn test_readme_example() -> anyhow::Result<()> {
-        let tmp_dir = std::env::temp_dir()
-            .join("test_readme_example".to_string() + Uuid::new_v4().to_string().as_str());
-        let some_dir = tmp_dir.join(path!("some" | "dir"));
+        let test_client = TestClient::new("test_readme_example")?;
+        let db = &test_client.client;
+
+        let some_dir = db.root().join(path!("some" | "dir"));
         fs::create_dir_all(&some_dir)?;
         let created = fs::metadata(some_dir)
             .context("could not get metadata")?
             .created()?;
-        eprint!("{:?}", tmp_dir.join("test_write.txt"));
-        File::create(tmp_dir.join("test_write.txt"))?;
-        File::create(tmp_dir.join("collatz_in.txt"))?;
-        fs::write(tmp_dir.join("collatz_in.txt"), "500")?;
-        File::create(tmp_dir.join("collatz_out.txt"))?;
+        eprint!("{:?}", db.root().join("test_write.txt"));
+        File::create(db.root().join("test_write.txt"))?;
+        File::create(db.root().join("collatz_in.txt"))?;
+        fs::write(db.root().join("collatz_in.txt"), "500")?;
+        File::create(db.root().join("collatz_out.txt"))?;
 
-        let db = Client::new(tmp_dir)?;
 
         {
             let gaurd = db.read_dir(path!("some" | "dir"))?;
@@ -636,6 +681,48 @@ mod test {
                 fs::write(&cp.path, n.to_string())?;
                 cp.commit()?;
             }
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_basic_dir_cp_atomic() -> anyhow::Result<()> {
+        let test_client = TestClient::new("test_basic_dir_cp_atomic")?;
+        let db = &test_client.client;
+
+        {
+            // TODO: using "." causes read lock and write lock on same directory, need to add some path normilization logic
+            // let gaurd = db.write_dir(".")?;
+            let gaurd = db.write_dir("")?;
+            let dir = gaurd.cp_atomic()?;
+            let child_path = dir.path.join("child");
+            fs::create_dir_all(&child_path)?;
+            let test_path = child_path.join("test.txt");
+            File::create(&test_path)?;
+            fs::write(&test_path, "test1")?;
+            dir.commit()?;
+        }
+
+        {
+            let gaurd = db.read_file("current/child/test.txt")?;
+            assert_eq!("test1", fs::read_to_string(gaurd.path)?);
+        }
+
+        {
+            // TODO: using "." causes read lock and write lock on same directory, need to add some path normilization logic
+            // let gaurd = db.write_dir(".")?;
+            let gaurd = db.write_dir("")?;
+            let dir = gaurd.cp_atomic()?;
+            let test_path = child_path.join("child/test.txt");
+            fs::write(&test_path, "test2")?;
+            dir.commit()?;
+        }
+
+        {
+            let gaurd = db.read_file("current/child/test.txt")?;
+            assert_eq!("test2", fs::read_to_string(gaurd.path)?);
         }
 
         Ok(())
