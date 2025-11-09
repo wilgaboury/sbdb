@@ -95,21 +95,6 @@ impl TxBuilder {
     }
 
     pub fn begin(mut self) -> anyhow::Result<Tx> {
-        fn contains(entry: &TxEntry, test: &TxEntry) -> bool {
-            match entry.kind {
-                TxEntryKind::Read => match test.kind {
-                    TxEntryKind::Read => entry.path.starts_with(&test.path),
-                    TxEntryKind::Write => false,
-                },
-                TxEntryKind::Write => match test.kind {
-                    TxEntryKind::Read => {
-                        entry.path.starts_with(&test.path) || test.path.starts_with(&entry.path)
-                    }
-                    TxEntryKind::Write => entry.path.starts_with(&test.path),
-                },
-            }
-        }
-
         let mut remove_writes = Vec::new();
         for write in self.writes.iter() {
             for anscestor in write.ancestors().skip(1) {
@@ -791,6 +776,70 @@ mod test {
         {
             let gaurd = db.read_file("current/nested/current/test.txt")?;
             assert_eq!("test2", fs::read_to_string(gaurd.path)?);
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_tx_operations() -> anyhow::Result<()> {
+        let test_client = TestClient::new("test_tx_operations")?;
+        let db = &test_client.client;
+
+        {
+            let gaurd = db.write_dir("")?;
+            let cp = gaurd.cp()?;
+            let nested = cp.path.join("nested");
+            let read = nested.join("read.txt");
+            let writes = nested.join("writes");
+            let write1 = writes.join("write1.txt");
+            let write2 = writes.join("write2.txt");
+            fs::create_dir_all(&nested)?;
+            File::create(&read)?;
+            fs::create_dir(&writes)?;
+            File::create(&write1)?;
+            File::create(&write2)?;
+            fs::write(&read, "1")?;
+            fs::write(&write1, "0")?;
+            fs::write(&write2, "0")?;
+            cp.commit()?;
+        }
+
+        {
+            let tx = db.tx()
+                .read("nested/read.txt")
+                .write("nested/writes/write1.txt")
+                .write("nested/writes/write2.txt")
+                .write("nested/writes") // purposefully add more write protection than neccessary
+                .begin()?;
+            let cp = tx.dir_cp("nested/writes")?;
+            let write1 = cp.path.join("write1.txt");
+            let write2 = cp.path.join("write2.txt");
+
+            let n = fs::read_to_string(db.root().join("nested/read.txt"))?
+                .trim()
+                .parse::<i64>()?;
+            
+            fs::write(write1, (n+1).to_string())?;
+            fs::write(write2, (n+2).to_string())?;
+
+            cp.commit()?;
+        }
+
+        {
+            let gaurd = db.read_file("nested/writes/write1.txt")?;
+            let n = fs::read_to_string(gaurd.path)?
+                .trim()
+                .parse::<i64>()?;
+            assert_eq!(2, n);
+        }
+
+        {
+            let gaurd = db.read_file("nested/writes/write2.txt")?;
+            let n = fs::read_to_string(gaurd.path)?
+                .trim()
+                .parse::<i64>()?;
+            assert_eq!(3, n);
         }
 
         Ok(())
