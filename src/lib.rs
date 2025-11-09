@@ -1,5 +1,8 @@
 use std::{
-    clone, collections::HashSet, ffi::OsString, fs::{self, File, OpenOptions}, path::{Path, PathBuf}
+    collections::HashSet,
+    ffi::OsString,
+    fs::{self, File, OpenOptions},
+    path::{Path, PathBuf},
 };
 
 use anyhow::{Context, anyhow};
@@ -75,7 +78,7 @@ impl TxBuilder {
         Self {
             root,
             reads: HashSet::new(),
-            writes: HashSet::new()
+            writes: HashSet::new(),
         }
     }
 
@@ -116,10 +119,16 @@ impl TxBuilder {
         let mut entries = Vec::new();
 
         for path in self.reads {
-            entries.push(TxEntry { kind: TxEntryKind::Read, path });
+            entries.push(TxEntry {
+                kind: TxEntryKind::Read,
+                path,
+            });
         }
         for path in self.writes {
-            entries.push(TxEntry { kind: TxEntryKind::Write, path });
+            entries.push(TxEntry {
+                kind: TxEntryKind::Write,
+                path,
+            });
         }
 
         entries.sort_by(|e1, e2| e1.path.cmp(&e2.path));
@@ -156,7 +165,7 @@ impl Tx {
     pub fn dir_cp<P: AsRef<Path>>(&self, orig: P) -> anyhow::Result<CowDirGaurd> {
         dir_cp(self.root.join(orig))
     }
-    
+
     pub fn dir_cp_atomic<P: AsRef<Path>>(&self, orig: P) -> anyhow::Result<CowAtomicDirGaurd> {
         dir_cp_atomic(self.root.join(orig))
     }
@@ -235,7 +244,7 @@ pub fn file_cp<P: AsRef<Path>>(orig: P) -> anyhow::Result<CowFileGaurd> {
     reflink_or_copy(&orig, &path)?;
     Ok(CowFileGaurd {
         path,
-        orig: orig.as_ref().to_path_buf()
+        orig: orig.as_ref().to_path_buf(),
     })
 }
 
@@ -262,7 +271,7 @@ impl DirWriteGaurd {
     }
 
     /// platform specific behavior:
-    /// 
+    ///
     /// This feature uses symbolic links, which windows supports, but only in developer mode
     /// or with escalated privlages. For that reason it should probably be avoided if you would
     /// like to have cross-platform support.
@@ -285,7 +294,7 @@ pub fn dir_cp_atomic<P: AsRef<Path>>(parent: P) -> anyhow::Result<CowAtomicDirGa
     let current = parent.join("current");
     let name = Uuid::new_v4().to_string();
     let path = parent.join(&name);
-    if current.exists() { 
+    if current.exists() {
         let orig = parent.join(fs::read_link(current)?);
         copy_recursive(&orig, &path)?;
         Ok(CowAtomicDirGaurd {
@@ -337,7 +346,7 @@ pub struct CowAtomicDirGaurd {
     parent: PathBuf,
     name: String,
     pub path: PathBuf,
-    orig: Option<PathBuf>
+    orig: Option<PathBuf>,
 }
 
 impl CowAtomicDirGaurd {
@@ -353,7 +362,6 @@ impl CowAtomicDirGaurd {
         }
 
         #[cfg(windows)]
-        #[coverage(off)]
         {
             std::os::windows::fs::symlink_dir(self.path, &current_rel)?;
         }
@@ -382,7 +390,10 @@ fn path_hidden_with_extension<P: AsRef<Path>>(path: P, ext: &str) -> anyhow::Res
     })
 }
 
-fn path_modify_filename<P: AsRef<Path>, F: FnOnce(&mut OsString)>(path: P, modify: F) -> anyhow::Result<PathBuf> {
+fn path_modify_filename<P: AsRef<Path>, F: FnOnce(&mut OsString)>(
+    path: P,
+    modify: F,
+) -> anyhow::Result<PathBuf> {
     let mut name = path
         .as_ref()
         .file_name()
@@ -401,7 +412,6 @@ const FILE_SHARE_WRITE: u32 = 0x00000002;
 const FILE_SHARE_DELETE: u32 = 0x00000004;
 
 #[cfg(windows)]
-#[coverage(off)]
 pub fn get_lock_and_queue<P: AsRef<Path>>(path: P) -> anyhow::Result<(File, File)> {
     let path_lock = path_hidden_with_extension(&path, ".lock")?;
     let path_queue = path_hidden_with_extension(&path, ".queue")?;
@@ -517,14 +527,13 @@ fn copy_recursive(src: impl AsRef<Path>, dst: impl AsRef<Path>) -> anyhow::Resul
             reflink_or_copy(&entry_path, &dest_path)?;
         } else if file_type.is_symlink() {
             let link_target = fs::read_link(&entry_path)?;
-            
+
             #[cfg(unix)]
             {
                 std::os::unix::fs::symlink(&link_target, &dest_path)?;
             }
-            
+
             #[cfg(windows)]
-            #[coverage(off)]
             {
                 std::os::windows::fs::symlink_dir(&link_target, &dest_path)?;
             }
@@ -537,10 +546,14 @@ fn copy_recursive(src: impl AsRef<Path>, dst: impl AsRef<Path>) -> anyhow::Resul
 #[cfg(test)]
 mod test {
     use std::{
-        fs::{self, File}, path::PathBuf, sync::{
+        fs::{self, File},
+        path::PathBuf,
+        sync::{
             Arc, Mutex,
             atomic::{AtomicU64, Ordering},
-        }, thread, time::Duration
+        },
+        thread,
+        time::Duration,
     };
 
     use anyhow::Context;
@@ -548,11 +561,11 @@ mod test {
     use rand::Rng;
     use uuid::Uuid;
 
-    use crate::{Client, ReadLock, WriteLock, dir_cp_atomic};
+    use crate::{Client, ReadLock, WriteLock};
 
     struct TestClient {
         pub client: Client,
-        root: PathBuf
+        root: PathBuf,
     }
 
     impl TestClient {
@@ -561,7 +574,7 @@ mod test {
                 .join(name.to_string() + "-" + Uuid::new_v4().to_string().as_str());
             Ok(TestClient {
                 client: Client::new(&root)?,
-                root
+                root,
             })
         }
     }
@@ -644,7 +657,6 @@ mod test {
         File::create(db.root().join("collatz_in.txt"))?;
         fs::write(db.root().join("collatz_in.txt"), "500")?;
         File::create(db.root().join("collatz_out.txt"))?;
-
 
         {
             let gaurd = db.read_dir(path!("some" | "dir"))?;
@@ -809,7 +821,8 @@ mod test {
         }
 
         {
-            let tx = db.tx()
+            let tx = db
+                .tx()
                 .read("nested/read.txt")
                 .write("nested/writes/write1.txt")
                 .write("nested/writes/write2.txt")
@@ -822,26 +835,22 @@ mod test {
             let n = fs::read_to_string(db.root().join("nested/read.txt"))?
                 .trim()
                 .parse::<i64>()?;
-            
-            fs::write(write1, (n+1).to_string())?;
-            fs::write(write2, (n+2).to_string())?;
+
+            fs::write(write1, (n + 1).to_string())?;
+            fs::write(write2, (n + 2).to_string())?;
 
             cp.commit()?;
         }
 
         {
             let gaurd = db.read_file("nested/writes/write1.txt")?;
-            let n = fs::read_to_string(gaurd.path)?
-                .trim()
-                .parse::<i64>()?;
+            let n = fs::read_to_string(gaurd.path)?.trim().parse::<i64>()?;
             assert_eq!(2, n);
         }
 
         {
             let gaurd = db.read_file("nested/writes/write2.txt")?;
-            let n = fs::read_to_string(gaurd.path)?
-                .trim()
-                .parse::<i64>()?;
+            let n = fs::read_to_string(gaurd.path)?.trim().parse::<i64>()?;
             assert_eq!(3, n);
         }
 
@@ -875,40 +884,36 @@ mod test {
         }
 
         {
-            let tx = db.tx()
+            let tx = db
+                .tx()
                 .read("nested/read.txt")
                 .write("nested/writes/current/write1.txt")
                 .write("nested/writes/current/write2.txt")
                 .write("nested/writes") // purposefully add more write protection than neccessary
                 .begin()?;
-            let cp = tx.dir_cp_atomic
-            ("nested/writes")?;
+            let cp = tx.dir_cp_atomic("nested/writes")?;
             let write1 = cp.path.join("write1.txt");
             let write2 = cp.path.join("write2.txt");
 
             let n = fs::read_to_string(db.root().join("nested/read.txt"))?
                 .trim()
                 .parse::<i64>()?;
-            
-            fs::write(write1, (n+1).to_string())?;
-            fs::write(write2, (n+2).to_string())?;
+
+            fs::write(write1, (n + 1).to_string())?;
+            fs::write(write2, (n + 2).to_string())?;
 
             cp.commit()?;
         }
 
         {
             let gaurd = db.read_file("nested/writes/current/write1.txt")?;
-            let n = fs::read_to_string(gaurd.path)?
-                .trim()
-                .parse::<i64>()?;
+            let n = fs::read_to_string(gaurd.path)?.trim().parse::<i64>()?;
             assert_eq!(2, n);
         }
 
         {
             let gaurd = db.read_file("nested/writes/current/write2.txt")?;
-            let n = fs::read_to_string(gaurd.path)?
-                .trim()
-                .parse::<i64>()?;
+            let n = fs::read_to_string(gaurd.path)?.trim().parse::<i64>()?;
             assert_eq!(3, n);
         }
 
