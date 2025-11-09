@@ -1,5 +1,5 @@
 use std::{
-    ffi::OsString, fs::{self, File, OpenOptions}, path::{Path, PathBuf}
+    clone, collections::HashSet, ffi::OsString, fs::{self, File, OpenOptions}, path::{Path, PathBuf}
 };
 
 use anyhow::{Context, anyhow};
@@ -66,30 +66,31 @@ pub struct TxEntry {
 
 pub struct TxBuilder {
     root: PathBuf,
-    entries: Vec<TxEntry>,
+    reads: HashSet<PathBuf>,
+    writes: HashSet<PathBuf>,
 }
 
 impl TxBuilder {
     pub fn new(root: PathBuf) -> Self {
         Self {
             root,
-            entries: Vec::new(),
+            reads: HashSet::new(),
+            writes: HashSet::new()
         }
     }
 
     pub fn read<P: AsRef<Path>>(mut self, path: P) -> Self {
-        self.entries.push(TxEntry {
-            kind: TxEntryKind::Read,
-            path: self.root.join(path.as_ref()),
-        });
+        for anscestor in path.as_ref().ancestors() {
+            self.reads.insert(anscestor.to_path_buf());
+        }
         self
     }
 
     pub fn write<P: AsRef<Path>>(mut self, path: P) -> Self {
-        self.entries.push(TxEntry {
-            kind: TxEntryKind::Write,
-            path: self.root.join(path.as_ref()),
-        });
+        self.writes.insert(path.as_ref().to_path_buf());
+        for anscestor in path.as_ref().ancestors().skip(1) {
+            self.reads.insert(anscestor.to_path_buf());
+        }
         self
     }
 
@@ -109,43 +110,41 @@ impl TxBuilder {
             }
         }
 
-        // TODO: this algorithm is currently messed up
-        // steps should be:
-        // 1. expand all locks that will be aquired (looking at ancestors)
-        // 2. remove duplicates
-        // 3. remove read locks that are children of write locks
-        // 4. sort
-        // 5. aquire
-        // 6. reverse and retern
-
-        {
-            let mut i = 0;
-            while i < self.entries.len() {
-                let mut j = 0;
-                while j < self.entries.len() {
-                    if i != j && contains(&self.entries[i], &self.entries[j]) {
-                        if i < j {
-                            self.entries.remove(j);
-                        } else {
-                            self.entries.remove(i);
-                            i -= 1;
-                        }
-                    } else {
-                        j += 1;
-                    }
+        let mut remove_writes = Vec::new();
+        for write in self.writes.iter() {
+            for anscestor in write.ancestors().skip(1) {
+                if self.writes.contains(anscestor) {
+                    remove_writes.push(write.clone());
+                    break;
                 }
-                i += 1;
             }
         }
+        for remove in remove_writes {
+            self.writes.remove(&remove);
+        }
 
-        self.entries.sort_by(|e1, e2| e1.path.cmp(&e2.path));
+        self.reads.retain(|p| {
+            p.ancestors()
+                .all(|anscestor| !self.writes.contains(anscestor))
+        });
 
-        let mut lock = Vec::with_capacity(self.entries.len());
+        let mut entries = Vec::new();
 
-        for e in self.entries {
+        for path in self.reads {
+            entries.push(TxEntry { kind: TxEntryKind::Read, path });
+        }
+        for path in self.writes {
+            entries.push(TxEntry { kind: TxEntryKind::Write, path });
+        }
+
+        entries.sort_by(|e1, e2| e1.path.cmp(&e2.path));
+
+        let mut lock = Vec::with_capacity(entries.len());
+
+        for e in entries {
             lock.push(match e.kind {
-                TxEntryKind::Read => Lock::Read(ReadLock::new(e.path)?),
-                TxEntryKind::Write => Lock::Write(WriteLock::new(e.path)?),
+                TxEntryKind::Read => Lock::Read(ReadLock::new(self.root.join(e.path))?),
+                TxEntryKind::Write => Lock::Write(WriteLock::new(self.root.join(e.path))?),
             });
         }
 
