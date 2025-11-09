@@ -862,6 +862,8 @@ mod test {
     #[test]
     #[cfg(unix)]
     fn test_tx_operations_atomic_cp() -> anyhow::Result<()> {
+        use crate::dir_cp_atomic;
+
         let test_client = TestClient::new("test_tx_operations_atomic_cp")?;
         let db = &test_client.client;
 
