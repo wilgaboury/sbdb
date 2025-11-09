@@ -353,6 +353,7 @@ impl CowAtomicDirGaurd {
         }
 
         #[cfg(windows)]
+        #[coverage(off)]
         {
             std::os::windows::fs::symlink_dir(self.path, &current_rel)?;
         }
@@ -400,6 +401,7 @@ const FILE_SHARE_WRITE: u32 = 0x00000002;
 const FILE_SHARE_DELETE: u32 = 0x00000004;
 
 #[cfg(windows)]
+#[coverage(off)]
 pub fn get_lock_and_queue<P: AsRef<Path>>(path: P) -> anyhow::Result<(File, File)> {
     let path_lock = path_hidden_with_extension(&path, ".lock")?;
     let path_queue = path_hidden_with_extension(&path, ".queue")?;
@@ -522,6 +524,7 @@ fn copy_recursive(src: impl AsRef<Path>, dst: impl AsRef<Path>) -> anyhow::Resul
             }
             
             #[cfg(windows)]
+            #[coverage(off)]
             {
                 std::os::windows::fs::symlink_dir(&link_target, &dest_path)?;
             }
@@ -836,6 +839,73 @@ mod test {
 
         {
             let gaurd = db.read_file("nested/writes/write2.txt")?;
+            let n = fs::read_to_string(gaurd.path)?
+                .trim()
+                .parse::<i64>()?;
+            assert_eq!(3, n);
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_tx_operations_atomic_cp() -> anyhow::Result<()> {
+        let test_client = TestClient::new("test_tx_operations_atomic_cp")?;
+        let db = &test_client.client;
+
+        {
+            let gaurd = db.write_dir("")?;
+            let cp = gaurd.cp()?;
+            let nested = cp.path.join("nested");
+            let read = nested.join("read.txt");
+            let writes = nested.join("writes");
+            let write1 = writes.join("current/write1.txt");
+            let write2 = writes.join("current/write2.txt");
+            fs::create_dir_all(&nested)?;
+            File::create(&read)?;
+            fs::create_dir(&writes)?;
+            dir_cp_atomic(writes)?.commit()?;
+            File::create(&write1)?;
+            File::create(&write2)?;
+            fs::write(&read, "1")?;
+            fs::write(&write1, "0")?;
+            fs::write(&write2, "0")?;
+            cp.commit()?;
+        }
+
+        {
+            let tx = db.tx()
+                .read("nested/read.txt")
+                .write("nested/writes/current/write1.txt")
+                .write("nested/writes/current/write2.txt")
+                .write("nested/writes") // purposefully add more write protection than neccessary
+                .begin()?;
+            let cp = tx.dir_cp_atomic
+            ("nested/writes")?;
+            let write1 = cp.path.join("write1.txt");
+            let write2 = cp.path.join("write2.txt");
+
+            let n = fs::read_to_string(db.root().join("nested/read.txt"))?
+                .trim()
+                .parse::<i64>()?;
+            
+            fs::write(write1, (n+1).to_string())?;
+            fs::write(write2, (n+2).to_string())?;
+
+            cp.commit()?;
+        }
+
+        {
+            let gaurd = db.read_file("nested/writes/current/write1.txt")?;
+            let n = fs::read_to_string(gaurd.path)?
+                .trim()
+                .parse::<i64>()?;
+            assert_eq!(2, n);
+        }
+
+        {
+            let gaurd = db.read_file("nested/writes/current/write2.txt")?;
             let n = fs::read_to_string(gaurd.path)?
                 .trim()
                 .parse::<i64>()?;

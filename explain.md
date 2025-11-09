@@ -1,6 +1,6 @@
 # Turning the Filesystem into a Database
 
-This article is an introduction to and explanation of SubsidiaDB. Features and usage will not be covered thoroughly; instead, we will gradually explore the systems and intuitions behind how it works. It's important to know where we are headed, so to reiterate the tagline: SubsidiaDB is a transactional, concurrent, embedded database that utilizes the filesystem as its storage engine.
+This article is an introduction to and explanation of SubsidiaDB. Features, usage, and precise implementation details will not be covered thoroughly; instead, we will gradually explore the systems and intuitions behind how it works. It's important to know where we are headed, so to reiterate the tagline: SubsidiaDB is a transactional, concurrent, embedded database that utilizes the filesystem as its storage engine.
 
 ## File Locking
 
