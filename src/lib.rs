@@ -1,6 +1,5 @@
 use std::{
-    fs::{self, File, OpenOptions},
-    path::{Path, PathBuf},
+    ffi::OsString, fs::{self, File, OpenOptions}, path::{Path, PathBuf}
 };
 
 use anyhow::{Context, anyhow};
@@ -12,24 +11,14 @@ use std::os::windows::prelude::*;
 
 #[derive(Clone, Debug)]
 pub struct Client {
-    parent: PathBuf,
     root: PathBuf,
-    meta: PathBuf
 }
 
 impl Client {
     pub fn new<P: AsRef<Path>>(parent: P) -> anyhow::Result<Self> {
-        let parent: PathBuf = parent.as_ref().to_path_buf();
-        let root = parent.join("root");
-        let meta = parent.join("meta");
-        fs::create_dir_all(&parent)?;
+        let root = parent.as_ref().join("root");
         fs::create_dir_all(&root)?;
-        fs::create_dir_all(&meta)?;
-        Ok(Self { 
-            parent,
-            root,
-            meta
-        })
+        Ok(Self { root })
     }
 
     pub fn read_file<P: AsRef<Path>>(&self, rpath: P) -> anyhow::Result<FileReadGaurd> {
@@ -120,6 +109,15 @@ impl TxBuilder {
             }
         }
 
+        // TODO: this algorithm is currently messed up
+        // steps should be:
+        // 1. expand all locks that will be aquired (looking at ancestors)
+        // 2. remove duplicates
+        // 3. remove read locks that are children of write locks
+        // 4. sort
+        // 5. aquire
+        // 6. reverse and retern
+
         {
             let mut i = 0;
             while i < self.entries.len() {
@@ -143,6 +141,7 @@ impl TxBuilder {
         self.entries.sort_by(|e1, e2| e1.path.cmp(&e2.path));
 
         let mut lock = Vec::with_capacity(self.entries.len());
+
         for e in self.entries {
             lock.push(match e.kind {
                 TxEntryKind::Read => Lock::Read(ReadLock::new(e.path)?),
@@ -264,7 +263,7 @@ impl FileWriteGaurd {
 }
 
 pub fn open_file_cp<P: AsRef<Path>>(orig: P) -> anyhow::Result<CowFileGaurd> {
-    let path = path_with_extension(&orig, ".tmp")?;
+    let path = path_hidden_with_extension(&orig, ".tmp")?;
     reflink_or_copy(&orig, &path)?;
     let file = OpenOptions::new()
         .read(true)
@@ -310,7 +309,7 @@ impl DirWriteGaurd {
 }
 
 pub fn dir_cp<P: AsRef<Path>>(orig: P) -> anyhow::Result<CowDirGaurd> {
-    let path = path_with_extension(&orig, ".tmp")?;
+    let path = path_hidden_with_extension(&orig, ".tmp")?;
     copy_recursive(&orig, &path)?;
     Ok(CowDirGaurd {
         path,
@@ -357,7 +356,7 @@ impl CowDirGaurd {
     pub fn commit(self) -> anyhow::Result<()> {
         let mut ext = ".bak".to_string();
         ext.push_str(Uuid::new_v4().to_string().as_str());
-        let bak = path_with_extension(&self.path, ext.as_str())?;
+        let bak = path_hidden_with_extension(&self.path, ext.as_str())?;
         fs::rename(&self.orig, &bak)?;
         if let Err(e) = fs::rename(&self.path, &self.orig) {
             fs::rename(&bak, &self.orig)?;
@@ -405,13 +404,24 @@ impl CowAtomicDirGaurd {
     }
 }
 
-fn path_with_extension<P: AsRef<Path>>(path: P, ext: &str) -> anyhow::Result<PathBuf> {
+fn path_hidden_with_extension<P: AsRef<Path>>(path: P, ext: &str) -> anyhow::Result<PathBuf> {
+    path_modify_filename(path, |name| {
+        let mut result = OsString::new();
+        result.push(".");
+        result.push(&name);
+        result.push(ext);
+        name.clear();
+        name.push(result);
+    })
+}
+
+fn path_modify_filename<P: AsRef<Path>, F: FnOnce(&mut OsString)>(path: P, modify: F) -> anyhow::Result<PathBuf> {
     let mut name = path
         .as_ref()
         .file_name()
         .context("not a valid path")?
         .to_os_string();
-    name.push(ext);
+    modify(&mut name);
     let parent = path.as_ref().parent().context("needs a parent")?;
     Ok(parent.join(name))
 }
@@ -425,8 +435,8 @@ const FILE_SHARE_DELETE: u32 = 0x00000004;
 
 #[cfg(windows)]
 pub fn get_lock_and_queue<P: AsRef<Path>>(path: P) -> anyhow::Result<(File, File)> {
-    let path_lock = path_with_extension(&path, ".lock")?;
-    let path_queue = path_with_extension(&path, ".queue")?;
+    let path_lock = path_hidden_with_extension(&path, ".lock")?;
+    let path_queue = path_hidden_with_extension(&path, ".queue")?;
 
     let lock = OpenOptions::new()
         .write(true)
@@ -447,8 +457,8 @@ pub fn get_lock_and_queue<P: AsRef<Path>>(path: P) -> anyhow::Result<(File, File
 
 #[cfg(not(windows))]
 pub fn get_lock_and_queue<P: AsRef<Path>>(path: P) -> anyhow::Result<(File, File)> {
-    let path_lock = path_with_extension(&path, ".lock")?;
-    let path_queue = path_with_extension(&path, ".queue")?;
+    let path_lock = path_hidden_with_extension(&path, ".lock")?;
+    let path_queue = path_hidden_with_extension(&path, ".queue")?;
 
     let lock = OpenOptions::new()
         .write(true)
@@ -697,6 +707,47 @@ mod test {
                 fs::write(&cp.path, n.to_string())?;
                 cp.commit()?;
             }
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_dir_cp() -> anyhow::Result<()> {
+        // TODO: actually implement this test right
+
+        let test_client = TestClient::new("test_dir_cp_atomic")?;
+        let db = &test_client.client;
+
+        {
+            let gaurd = db.write_dir("")?;
+            let dir = gaurd.cp_atomic()?;
+            let nested_path = dir.path.join("nested");
+            fs::create_dir(&nested_path)?;
+            dir_cp_atomic(&nested_path)?.commit()?;
+            let nested_cur_path = nested_path.join("current");
+            let test_path = nested_cur_path.join("test.txt");
+            File::create(&test_path)?;
+            fs::write(&test_path, "test1")?;
+            dir.commit()?;
+        }
+
+        {
+            let gaurd = db.read_file("current/nested/current/test.txt")?;
+            assert_eq!("test1", fs::read_to_string(gaurd.path)?);
+        }
+
+        {
+            let gaurd = db.write_dir("")?;
+            let dir = gaurd.cp_atomic()?;
+            let test_path = dir.path.join("nested/current/test.txt");
+            fs::write(&test_path, "test2")?;
+            dir.commit()?;
+        }
+
+        {
+            let gaurd = db.read_file("current/nested/current/test.txt")?;
+            assert_eq!("test2", fs::read_to_string(gaurd.path)?);
         }
 
         Ok(())
