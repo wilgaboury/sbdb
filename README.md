@@ -26,7 +26,7 @@ fn main() -> anyhow::Result<()> {
 
     {
         let gaurd = db.write_file("test_write.txt")?;
-        let cp = gaurd.open_cp()?;
+        let cp = gaurd.cp()?;
         fs::write(&cp.path, "some content")?;
         cp.commit()?;
     }
@@ -42,7 +42,7 @@ fn main() -> anyhow::Result<()> {
             .parse::<i64>()?;
         if n > 1 {
             let n = if n % 2 == 0 { n / 2 } else { 3 * n + 1 };
-            let cp = tx.open_file_cp("collatz_out.txt")?;
+            let cp = tx.file_cp("collatz_out.txt")?;
             fs::write(&cp.path, n.to_string())?;
             cp.commit()?;
         }

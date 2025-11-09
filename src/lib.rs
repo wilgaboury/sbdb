@@ -160,12 +160,13 @@ impl TxBuilder {
 
 pub struct Tx {
     root: PathBuf,
+    #[allow(dead_code)]
     lock: Vec<Lock>,
 }
 
 impl Tx {
-    pub fn open_file_cp<P: AsRef<Path>>(&self, orig: P) -> anyhow::Result<CowFileGaurd> {
-        open_file_cp(self.root.join(orig))
+    pub fn file_cp<P: AsRef<Path>>(&self, orig: P) -> anyhow::Result<CowFileGaurd> {
+        file_cp(self.root.join(orig))
     }
 
     pub fn dir_cp<P: AsRef<Path>>(&self, orig: P) -> anyhow::Result<CowDirGaurd> {
@@ -222,17 +223,8 @@ fn create_write_file_locks<P: AsRef<Path>>(root: &PathBuf, rpath: P) -> anyhow::
 
 pub struct FileReadGaurd {
     pub path: PathBuf,
+    #[allow(dead_code)]
     lock: Vec<Lock>,
-}
-
-impl FileReadGaurd {
-    pub fn open(&self) -> anyhow::Result<File> {
-        OpenOptions::new()
-            .read(true)
-            .create(true)
-            .open(&self.path)
-            .context("failed to open")
-    }
 }
 
 impl CowFileGaurd {
@@ -244,51 +236,39 @@ impl CowFileGaurd {
 
 pub struct FileWriteGaurd {
     pub path: PathBuf,
+    #[allow(dead_code)]
     lock: Vec<Lock>,
 }
 
 impl FileWriteGaurd {
-    pub fn open(&self) -> anyhow::Result<File> {
-        OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(&self.path)
-            .context("failed to open")
-    }
-
-    pub fn open_cp(&self) -> anyhow::Result<CowFileGaurd> {
-        open_file_cp(&self.path)
+    pub fn cp(&self) -> anyhow::Result<CowFileGaurd> {
+        file_cp(&self.path)
     }
 }
 
-pub fn open_file_cp<P: AsRef<Path>>(orig: P) -> anyhow::Result<CowFileGaurd> {
+pub fn file_cp<P: AsRef<Path>>(orig: P) -> anyhow::Result<CowFileGaurd> {
     let path = path_hidden_with_extension(&orig, ".tmp")?;
     reflink_or_copy(&orig, &path)?;
-    let file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(&path)
-        .context("failed to open")?;
     Ok(CowFileGaurd {
         path,
-        orig: orig.as_ref().to_path_buf(),
-        file,
+        orig: orig.as_ref().to_path_buf()
     })
 }
 
 pub struct CowFileGaurd {
     pub path: PathBuf,
     orig: PathBuf,
-    pub file: File,
 }
 
 pub struct DirReadGaurd {
     pub path: PathBuf,
+    #[allow(dead_code)]
     lock: Vec<Lock>,
 }
 
 pub struct DirWriteGaurd {
     pub path: PathBuf,
+    #[allow(dead_code)]
     lock: Vec<Lock>,
 }
 
@@ -601,11 +581,14 @@ mod test {
 
     impl Drop for TestClient {
         fn drop(&mut self) {
-            fs::remove_dir_all(&self.root);
+            if let Err(e) = fs::remove_dir_all(&self.root) {
+                eprintln!("failed to delete test db: {:?}", e);
+            }
         }
     }
 
     #[test]
+    #[allow(unused_variables)]
     fn fuzz_test_mixed_locking() {
         let mut threads = Vec::new();
         let tmp_dir = std::env::temp_dir();
@@ -683,13 +666,13 @@ mod test {
         }
 
         {
-            let gaurd = db.write_dir(path!("some" | "dir"));
+            let _gaurd = db.write_dir(path!("some" | "dir"));
             fs::create_dir(db.root.join(path!("some" | "dir" | "new")))?;
         }
 
         {
             let gaurd = db.write_file("test_write.txt")?;
-            let cp = gaurd.open_cp()?;
+            let cp = gaurd.cp()?;
             fs::write(&cp.path, "some content")?;
             cp.commit()?;
         }
@@ -705,7 +688,7 @@ mod test {
                 .parse::<i64>()?;
             if n > 1 {
                 let n = if n % 2 == 0 { n / 2 } else { 3 * n + 1 };
-                let cp = tx.open_file_cp("collatz_out.txt")?;
+                let cp = tx.file_cp("collatz_out.txt")?;
                 fs::write(&cp.path, n.to_string())?;
                 cp.commit()?;
             }
