@@ -238,7 +238,6 @@ impl FileReadGaurd {
 impl CowFileGaurd {
     pub fn commit(self) -> anyhow::Result<()> {
         fs::rename(&self.path, &self.orig)?;
-        drop(self);
         Ok(())
     }
 }
@@ -362,7 +361,10 @@ impl CowDirGaurd {
             fs::rename(&bak, &self.orig)?;
             return Err(anyhow!(e));
         }
-        fs::remove_dir_all(&bak)?;
+        if let Err(e) = fs::remove_dir_all(&bak) {
+            // swallow error since it does not indicate failed commit
+            eprintln!("failed to cleanup dir {:?}, error: {:?}", bak, e)
+        }
         Ok(())
     }
 }
@@ -377,9 +379,9 @@ pub struct CowAtomicDirGaurd {
 impl CowAtomicDirGaurd {
     pub fn commit(self) -> anyhow::Result<()> {
         let current = self.parent.join("current");
-        let current_tmp = self.parent.join("current.tmp"); // TODO: create in meta
+        let current_tmp = self.parent.join(".current.tmp");
 
-        let mut current_rel = PathBuf::from(self.name);
+        let current_rel = PathBuf::from(self.name);
 
         #[cfg(unix)]
         {
@@ -395,9 +397,9 @@ impl CowAtomicDirGaurd {
         fs::rename(&current_tmp, current)?;
 
         if let Some(orig) = self.orig {
-            if let Err(_e) = fs::remove_dir_all(orig) {
-                // swallow error, it does not indicate failed commit
-                // TODO: should log or do something
+            if let Err(e) = fs::remove_dir_all(&orig) {
+                // swallow error since it does not indicate failed commit
+                eprintln!("failed to cleanup dir {:?}, error: {:?}", orig, e)
             }
         }
         Ok(())
@@ -714,40 +716,59 @@ mod test {
 
     #[test]
     fn test_dir_cp() -> anyhow::Result<()> {
-        // TODO: actually implement this test right
-
-        let test_client = TestClient::new("test_dir_cp_atomic")?;
+        let test_client = TestClient::new("test_dir_cp")?;
         let db = &test_client.client;
 
         {
             let gaurd = db.write_dir("")?;
-            let dir = gaurd.cp_atomic()?;
-            let nested_path = dir.path.join("nested");
-            fs::create_dir(&nested_path)?;
-            dir_cp_atomic(&nested_path)?.commit()?;
-            let nested_cur_path = nested_path.join("current");
-            let test_path = nested_cur_path.join("test.txt");
-            File::create(&test_path)?;
-            fs::write(&test_path, "test1")?;
+            let dir = gaurd.cp()?;
+            let dir1 = dir.path.join("dir1");
+            let dir2 = dir.path.join("dir2");
+            let test1 = dir1.join("test.txt");
+            let test2 = dir2.join("test.txt");
+            fs::create_dir(&dir1)?;
+            fs::create_dir(&dir2)?;
+            File::create(&test1)?;
+            File::create(&test2)?;
+            fs::write(&test1, "content1")?;
+            fs::write(&test2, "content1")?;
             dir.commit()?;
         }
 
         {
-            let gaurd = db.read_file("current/nested/current/test.txt")?;
-            assert_eq!("test1", fs::read_to_string(gaurd.path)?);
+            let gaurd = db.read_file("dir1/test.txt")?;
+            assert_eq!("content1", fs::read_to_string(gaurd.path)?);
+        }
+
+        {
+            let gaurd = db.read_file("dir2/test.txt")?;
+            assert_eq!("content1", fs::read_to_string(gaurd.path)?);
         }
 
         {
             let gaurd = db.write_dir("")?;
-            let dir = gaurd.cp_atomic()?;
-            let test_path = dir.path.join("nested/current/test.txt");
-            fs::write(&test_path, "test2")?;
+            let dir = gaurd.cp()?;
+            let dir1 = dir.path.join("dir1");
+            let dir2 = dir.path.join("dir2");
+            let dir3 = dir.path.join("dir3");
+            let test1 = dir1.join("test.txt");
+            let test3 = dir3.join("test.txt");
+            fs::remove_dir_all(dir2)?;
+            fs::create_dir(&dir3)?;
+            File::create(&test3)?;
+            fs::write(&test1, "content2")?;
+            fs::write(&test3, "content2")?;
             dir.commit()?;
         }
 
         {
-            let gaurd = db.read_file("current/nested/current/test.txt")?;
-            assert_eq!("test2", fs::read_to_string(gaurd.path)?);
+            let gaurd = db.read_file("dir1/test.txt")?;
+            assert_eq!("content2", fs::read_to_string(gaurd.path)?);
+        }
+
+        {
+            let gaurd = db.read_file("dir3/test.txt")?;
+            assert_eq!("content2", fs::read_to_string(gaurd.path)?);
         }
 
         Ok(())
@@ -760,9 +781,6 @@ mod test {
         let db = &test_client.client;
 
         {
-            // TODO: using "." causes read lock and write lock on same directory, need to add some path normilization logic
-            // let gaurd = db.write_dir(".")?;
-
             let gaurd = db.write_dir("")?;
             let dir = gaurd.cp_atomic()?;
             let nested_path = dir.path.join("nested");
