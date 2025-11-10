@@ -56,7 +56,7 @@ Without getting too wrapped up in an analysis of different concurrency control s
 
 ## Atomic Directory Modifications Revisited
 
-So far, I have mentioned two major shortcomings, non-atomic directory commit and lack of multi-entry rollback. SubstatiaDB does offer a solution to these problems, but it comes with drawbacks.
+So far, I have mentioned two major shortcomings, non-atomic directory commit and lack of multi-entry rollback. SubsidiaDB does offer a solution to these problems, but it comes with drawbacks.
 
 As mentioned before, write commits are atomic for files, so by representing our directory with a symbolic link, which is just a file, we actually can perform atomic commit for an entire directory. Let's demonstrate how it works with a hypothetical directory called `target`. Inside target will exist a symbolic link `target/current` which points to an actual directory with our database content `target/<uuid-1>`. First, we take a write lock on `target`, then copy `target/<uuid-1>` to `target/<uuid-2>` and perform mutations on the copy. To commit, we make a new symbolic link `target/current.tmp` and atomically rename it to `target/current`. Finally, we can safely delete `target/<uuid-1>` to cleanup. Symbolic links aren't an ideal solution in many cases though, as they have problems on Windows and can complicate programmatic traversal. This scheme also adds additional nesting to the database structure, which is harmful to locking performance. For these reasons, it is left to the discretion of users to what extent they employ this feature.
 
@@ -64,7 +64,7 @@ For multi-entry rollback, this may have already been apparent to some readers, b
 
 ## Conclusion
 
-This database came about from wrestling with a simple question: would it be possible to build an embedded database that supports truly concurrent writes? From this starting point, it feels to me like the entire design falls into place as a natural logical progression. I see this system as filling a neglected niche, small applications that want resilient storage with ACID guarantees but don’t want the large leap in complexity of standard embedded databases (or full DBMSs for that matter). Reading and writing files is one of the first topics every programmer learns about, so it’s a great benefit that this design simply adds new functionality to a persistence interface that everyone is already familiar with.
+This database came about from wrestling with a simple question: how could one create an embedded database that supports truly concurrent multi-process writes? From this starting point, it felt to me like the entire design fell into place as a natural logical progression. I see this system as filling a neglected niche, small applications that want resilient storage with ACID guarantees but don’t want the large leap in complexity of standard embedded databases (or full DBMSs for that matter). Working with files is one of the first proramming topics people learn about, so it’s a huge benefit that this design is simply providing additional safety to a persistence interface that everyone is already familiar with.
 
 ### Addendum on Hierarchical Databases
 
