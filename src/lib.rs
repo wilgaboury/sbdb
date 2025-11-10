@@ -18,8 +18,8 @@ pub struct Client {
 }
 
 impl Client {
-    pub fn new<P: AsRef<Path>>(parent: P) -> anyhow::Result<Self> {
-        let root = parent.as_ref().join("root");
+    pub fn new<P: AsRef<Path>>(root: P) -> anyhow::Result<Self> {
+        let root = root.as_ref().to_path_buf();
         fs::create_dir_all(&root)?;
         Ok(Self { root })
     }
@@ -665,8 +665,11 @@ mod test {
         }
 
         {
-            let _gaurd = db.write_dir(path!("some" | "dir"));
-            fs::create_dir(db.root.join(path!("some" | "dir" | "new")))?;
+            let gaurd = db.write_dir(path!("some" | "dir"))?;
+            let cp = gaurd.cp()?;
+            fs::create_dir(cp.path.join("new_dir"))?;
+            File::create(cp.path.join("new_file"))?;
+            cp.commit()?;
         }
 
         {

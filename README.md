@@ -8,6 +8,8 @@ A transactional, concurrent, embedded database that utilyzes the filesystem as i
 
 If you are looking for a explination of how SubsidiaDB works, try reading the included article: [Turning the Filesystem into a Database](./explain.md).
 
+Documentation, examples, and more thorough testing are a WIP.
+
 ## Example
 
 ```rust
@@ -20,8 +22,11 @@ fn main() -> anyhow::Result<()> {
     }
 
     {
-        let gaurd = db.write_dir(path!("some" | "dir"));
-        fs::create_dir(db.root.join(path!("some" | "dir" | "new")))?;
+        let gaurd = db.write_dir(path!("some" | "dir"))?;
+        let cp = gaurd.cp()?;
+        fs::create_dir(cp.path.join("new_dir"))?;
+        File::create(cp.path.join("new_file"))?;
+        cp.commit()?;
     }
 
     {

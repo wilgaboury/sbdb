@@ -1,6 +1,6 @@
 # Turning the Filesystem into a Database
 
-This article is an introduction to and explanation of SubsidiaDB. Features, usage, and precise implementation details will not be covered thoroughly; instead, we will gradually explore the systems and intuitions behind how it works. It's important to know where we are headed, so to reiterate the tagline: SubsidiaDB is a transactional, concurrent, embedded database that utilizes the filesystem as its storage engine.
+This article is an introduction to and explanation of SubsidiaDB. Usage and precise implementation details will not be covered; instead, we will gradually explore the systems and intuitions behind how it works. It's important to know where we are headed, so to reiterate the tagline: SubsidiaDB is a transactional, concurrent, embedded database that utilizes the filesystem as its storage engine.
 
 ## File Locking
 
@@ -26,7 +26,7 @@ fn lock_write(file) {
 
 ## Directories
 
-In treating the filesystem as a database, we additionally need to consider reading and writing directories (by writing I mean creating, deleting, or renaming a directory's children). Since directories can't be locked, we will simply have an adjacent file next to each directory called `_dirname_.lock`. Read and write locking on a single directory will then work exactly the same way as files.
+In treating the filesystem as a database, we additionally need to consider reading and writing directories (by writing a directory I mean CRUD operations on a directory's children). Since directories can't be locked, we will simply have an adjacent file next to each directory called `_dirname_.lock`. Read and write locking on a single directory will then work exactly the same way as files.
 
 It's important to also note at this point that unlike most database systems, which are relatively flat, filesystems are hierarchical. When taking a read or write lock on a file or directory, concurrent modifications to the parent directory may cause problems. To remedy this, our lock procedure (read and write) will first take a shared lock on each parent directory starting from the root and going down to the target.
 
@@ -64,7 +64,7 @@ For multi-entry rollback, this may have already been apparent to some readers, b
 
 ## Conclusion
 
-I see this database as filling a neglected niche for applications that need persistent storage. As already expounded upon, filesystems by themselves do not offer the ACID guarantees needed for non-trivial resilient applications. Other embedded databases (like SQLite, RocksDB, LMDB, etc.) are more complex, and by using a single file, prevent truly concurrent multi-process writes. Full DBMSs are heavy on resources and incur higher operational burden; they are also not well suited for applications intending to be distributed and run by others as a single executable. SubsidiaDB is not strictly better than these other solutions, but it brings a different set of tradeoffs to the table.
+This database came about from wrestling with a simple question: would it be possible to build an embedded database that supports truly concurrent writes? From this starting point, it feels to me like the entire design falls into place as a natural logical progression. I see this system as filling a neglected niche, small applications that want resilient storage with ACID guarantees but don’t want the large leap in complexity of standard embedded databases (or full DBMSs for that matter). Reading and writing files is one of the first topics every programmer learns about, so it’s a great benefit that this design simply adds new functionality to a persistence interface that everyone is already familiar with.
 
 ### Addendum on Hierarchical Databases
 
