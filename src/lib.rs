@@ -2,7 +2,7 @@ use std::{
     collections::HashSet,
     ffi::OsString,
     fs::{self, File, OpenOptions},
-    path::{Path, PathBuf},
+    path::{self, Path, PathBuf},
 };
 
 use anyhow::{Context, anyhow};
@@ -271,6 +271,7 @@ pub struct DirWriteGaurd {
 
 impl DirWriteGaurd {
     pub fn cp(&self) -> anyhow::Result<CowDirGaurd> {
+        // TODO: convert atomic to normal
         dir_cp(&self.path)
     }
 
@@ -281,14 +282,6 @@ impl DirWriteGaurd {
     /// like to have cross-platform support.
     pub fn cp_atomic(&self) -> anyhow::Result<CowAtomicDirGaurd> {
         dir_cp_atomic(&self.path)
-    }
-
-    pub fn convert_to_atomic(&self) {
-        // TODO
-    }
-
-    pub fn convert_from_atomic(&self) {
-        // TODO
     }
 
     pub fn create_dir_atomic<P: AsRef<Path>>(&self, path: P) -> anyhow::Result<()> {
@@ -306,8 +299,12 @@ pub fn dir_cp<P: AsRef<Path>>(orig: P) -> anyhow::Result<CowDirGaurd> {
     })
 }
 
+fn strip_trailing_slash(path: PathBuf) -> PathBuf {
+    path.components().as_path().to_path_buf()
+}
+
 pub fn dir_cp_atomic<P: AsRef<Path>>(current: P) -> anyhow::Result<CowAtomicDirGaurd> {
-    let current = current.as_ref();
+    let current = strip_trailing_slash(current.as_ref().to_path_buf());
     let parent = current.parent().context("missing parent")?.to_path_buf();
 
     let mut name = String::new();
@@ -317,17 +314,30 @@ pub fn dir_cp_atomic<P: AsRef<Path>>(current: P) -> anyhow::Result<CowAtomicDirG
 
     let path = parent.join(&name);
     if current.exists() {
-        let orig = parent.join(fs::read_link(current)?);
-        copy_recursive(&orig, &path)?;
-        Ok(CowAtomicDirGaurd {
-            parent,
-            name,
-            path,
-            orig: Some(orig),
-        })
+        if current.is_symlink() {
+            let orig = parent.join(fs::read_link(&current)?);
+            copy_recursive(&orig, &path)?;
+            Ok(CowAtomicDirGaurd {
+                current,
+                parent,
+                name,
+                path,
+                orig: Some(orig),
+            })
+        } else {
+            copy_recursive(&current, &path)?;
+            Ok(CowAtomicDirGaurd {
+                current,
+                parent,
+                name,
+                path,
+                orig: None,
+            })
+        }
     } else {
         fs::create_dir_all(&path)?;
         Ok(CowAtomicDirGaurd {
+            current,
             parent,
             name,
             path,
@@ -352,8 +362,8 @@ impl CowDirGaurd {
         ext.push('.');
         ext.push_str(Uuid::new_v4().to_string().as_str());
         ext.push_str(".bak.sbdb");
-
         let bak = path_hidden_with_extension(&self.path, ext.as_str())?;
+
         fs::rename(&self.orig, &bak)?;
         if let Err(e) = fs::rename(&self.path, &self.orig) {
             fs::rename(&bak, &self.orig)?;
@@ -368,6 +378,7 @@ impl CowDirGaurd {
 }
 
 pub struct CowAtomicDirGaurd {
+    current: PathBuf,
     parent: PathBuf,
     name: String,
     pub path: PathBuf,
@@ -376,9 +387,7 @@ pub struct CowAtomicDirGaurd {
 
 impl CowAtomicDirGaurd {
     pub fn commit(self) -> anyhow::Result<()> {
-        let current = self.parent.join("current");
-        let current_tmp = self.parent.join(".current.tmp");
-
+        let current_tmp = path_hidden_with_extension(&self.current, ".tmplnk.sbdb")?;
         let current_rel = PathBuf::from(self.name);
 
         #[cfg(unix)]
@@ -391,13 +400,32 @@ impl CowAtomicDirGaurd {
             std::os::windows::fs::symlink_dir(self.path, &current_rel)?;
         }
 
+        let converting = self.current.exists() && self.current.is_dir();
+        let bak = if converting {
+            let mut ext = String::new();
+            ext.push('.');
+            ext.push_str(Uuid::new_v4().to_string().as_str());
+            ext.push_str(".bak.sbdb");
+            let bak = path_hidden_with_extension(&self.path, ext.as_str())?;
+            fs::rename(&self.current, &bak)?;
+            Some(bak)
+        } else {
+            None
+        };
+
         // atomic commit
-        fs::rename(&current_tmp, current)?;
+        fs::rename(&current_tmp, self.current)?;
 
         if let Some(orig) = self.orig {
             if let Err(e) = fs::remove_dir_all(&orig) {
                 // swallow error since it does not indicate failed commit
                 eprintln!("failed to cleanup dir {:?}, error: {:?}", orig, e)
+            }
+        }
+        if let Some(bak) = bak {
+            if let Err(e) = fs::remove_dir_all(&bak) {
+                // swallow error since it does not indicate failed commit
+                eprintln!("failed to cleanup dir {:?}, error: {:?}", bak, e)
             }
         }
         Ok(())
@@ -785,28 +813,27 @@ mod test {
             let nested_path = dir.path.join("nested");
             fs::create_dir(&nested_path)?;
             dir_cp_atomic(&nested_path)?.commit()?;
-            let nested_cur_path = nested_path.join("current");
-            let test_path = nested_cur_path.join("test.txt");
+            let test_path = nested_path.join("test.txt");
             File::create(&test_path)?;
             fs::write(&test_path, "test1")?;
             dir.commit()?;
         }
 
         {
-            let gaurd = db.read_file("current/nested/current/test.txt")?;
+            let gaurd = db.read_file("nested/test.txt")?;
             assert_eq!("test1", fs::read_to_string(gaurd.path)?);
         }
 
         {
             let gaurd = db.write_dir("")?;
             let dir = gaurd.cp_atomic()?;
-            let test_path = dir.path.join("nested/current/test.txt");
+            let test_path = dir.path.join("nested/test.txt");
             fs::write(&test_path, "test2")?;
             dir.commit()?;
         }
 
         {
-            let gaurd = db.read_file("current/nested/current/test.txt")?;
+            let gaurd = db.read_file("nested/test.txt")?;
             assert_eq!("test2", fs::read_to_string(gaurd.path)?);
         }
 
@@ -888,8 +915,8 @@ mod test {
             let nested = cp.path.join("nested");
             let read = nested.join("read.txt");
             let writes = nested.join("writes");
-            let write1 = writes.join("current/write1.txt");
-            let write2 = writes.join("current/write2.txt");
+            let write1 = writes.join("write1.txt");
+            let write2 = writes.join("write2.txt");
             fs::create_dir_all(&nested)?;
             File::create(&read)?;
             fs::create_dir(&writes)?;
@@ -906,8 +933,8 @@ mod test {
             let tx = db
                 .tx()
                 .read("nested/read.txt")
-                .write("nested/writes/current/write1.txt")
-                .write("nested/writes/current/write2.txt")
+                .write("nested/writes/write1.txt")
+                .write("nested/writes/write2.txt")
                 .write("nested/writes") // purposefully add more write protection than neccessary
                 .begin()?;
             let cp = tx.dir_cp_atomic("nested/writes")?;
@@ -925,13 +952,13 @@ mod test {
         }
 
         {
-            let gaurd = db.read_file("nested/writes/current/write1.txt")?;
+            let gaurd = db.read_file("nested/writes/write1.txt")?;
             let n = fs::read_to_string(gaurd.path)?.trim().parse::<i64>()?;
             assert_eq!(2, n);
         }
 
         {
-            let gaurd = db.read_file("nested/writes/current/write2.txt")?;
+            let gaurd = db.read_file("nested/writes/write2.txt")?;
             let n = fs::read_to_string(gaurd.path)?.trim().parse::<i64>()?;
             assert_eq!(3, n);
         }
