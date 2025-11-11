@@ -26,7 +26,7 @@ fn lock_write(file) {
 
 ## Directories
 
-In treating the filesystem as a database, we additionally need to consider reading and writing directories (by writing a directory I mean CRUD operations on a directory's children). Since directories can't be locked, we will simply have an adjacent file next to each directory called `_dirname_.lock`. Read and write locking on a single directory will then work exactly the same way as files.
+In treating the filesystem as a database, we additionally need to consider reading and writing directories (by that I mean CRUD operations on a directory's children). Since directories can't be locked, we will simply have an adjacent file next to each directory called `_dirname_.lock`. Read and write locks on a single directory will then work exactly the same way as files.
 
 It's important to also note at this point that unlike most database systems, which are relatively flat, filesystems are hierarchical. When taking a read or write lock on a file or directory, concurrent modifications to the parent directory may cause problems. To remedy this, our lock procedure (read and write) will first take a shared lock on each parent directory starting from the root and going down to the target.
 
@@ -64,7 +64,7 @@ For multi-entry rollback, this may have already been apparent to some readers, b
 
 ## Conclusion
 
-This database came about from wrestling with a simple question: how could one create an embedded database that supports truly concurrent multi-process writes? From this starting point, it felt to me like the entire design fell into place as a natural logical progression. I see this system as filling a neglected niche, small applications that want resilient storage with ACID guarantees but don’t want the large leap in complexity of standard embedded databases (or full DBMSs for that matter). Working with files is one of the first proramming topics people learn about, so it’s a huge benefit that this design is simply providing additional safety to a persistence interface that everyone is already familiar with.
+This database came about from wrestling with a simple question: how could one create an embedded database that supports truly concurrent multi-process writes? From this starting point, it felt to me like the entire design fell into place as a natural logical progression. I see this system as filling a neglected niche, small applications that want resilient storage with ACID guarantees but don’t want the large leap in complexity of standard embedded databases (or full DBMSs for that matter). Working with files is one of the first proramming topics people learn about, so it’s a huge benefit that this database is simply providing additional safety to a persistence interface that everyone is already familiar with.
 
 ### Addendum on Hierarchical Databases
 
