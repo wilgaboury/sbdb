@@ -24,6 +24,10 @@ impl Client {
         Ok(Self { root })
     }
 
+    pub fn root(&self) -> &PathBuf {
+        &self.root
+    }
+
     pub fn read_file<P: AsRef<Path>>(&self, rpath: P) -> anyhow::Result<FileReadGaurd> {
         let path = self.root.join(rpath.as_ref());
         let lock = create_read_file_locks(&self.root, rpath)?;
@@ -52,8 +56,8 @@ impl Client {
         TxBuilder::new(self.root.clone())
     }
 
-    pub fn root(&self) -> &PathBuf {
-        &self.root
+    pub fn gc(&self) {
+        // TODO
     }
 }
 
@@ -220,13 +224,6 @@ pub struct FileReadGaurd {
     lock: Vec<Lock>,
 }
 
-impl CowFileGaurd {
-    pub fn commit(self) -> anyhow::Result<()> {
-        fs::rename(&self.path, &self.orig)?;
-        Ok(())
-    }
-}
-
 pub struct FileWriteGaurd {
     pub path: PathBuf,
     #[allow(dead_code)]
@@ -240,7 +237,7 @@ impl FileWriteGaurd {
 }
 
 pub fn file_cp<P: AsRef<Path>>(orig: P) -> anyhow::Result<CowFileGaurd> {
-    let path = path_hidden_with_extension(&orig, ".tmp")?;
+    let path = path_hidden_with_extension(&orig, ".tmp.sbdb")?;
     reflink_or_copy(&orig, &path)?;
     Ok(CowFileGaurd {
         path,
@@ -251,6 +248,13 @@ pub fn file_cp<P: AsRef<Path>>(orig: P) -> anyhow::Result<CowFileGaurd> {
 pub struct CowFileGaurd {
     pub path: PathBuf,
     orig: PathBuf,
+}
+
+impl CowFileGaurd {
+    pub fn commit(self) -> anyhow::Result<()> {
+        fs::rename(&self.path, &self.orig)?;
+        Ok(())
+    }
 }
 
 pub struct DirReadGaurd {
@@ -278,10 +282,23 @@ impl DirWriteGaurd {
     pub fn cp_atomic(&self) -> anyhow::Result<CowAtomicDirGaurd> {
         dir_cp_atomic(&self.path)
     }
+
+    pub fn convert_to_atomic(&self) {
+        // TODO
+    }
+
+    pub fn convert_from_atomic(&self) {
+        // TODO
+    }
+
+    pub fn create_dir_atomic<P: AsRef<Path>>(&self, path: P) -> anyhow::Result<()> {
+        dir_cp_atomic(self.path.join(path))?.commit()?;
+        Ok(())
+    }
 }
 
 pub fn dir_cp<P: AsRef<Path>>(orig: P) -> anyhow::Result<CowDirGaurd> {
-    let path = path_hidden_with_extension(&orig, ".tmp")?;
+    let path = path_hidden_with_extension(&orig, ".tmp.sbdb")?;
     copy_recursive(&orig, &path)?;
     Ok(CowDirGaurd {
         path,
@@ -289,10 +306,15 @@ pub fn dir_cp<P: AsRef<Path>>(orig: P) -> anyhow::Result<CowDirGaurd> {
     })
 }
 
-pub fn dir_cp_atomic<P: AsRef<Path>>(parent: P) -> anyhow::Result<CowAtomicDirGaurd> {
-    let parent = parent.as_ref().to_path_buf();
-    let current = parent.join("current");
-    let name = Uuid::new_v4().to_string();
+pub fn dir_cp_atomic<P: AsRef<Path>>(current: P) -> anyhow::Result<CowAtomicDirGaurd> {
+    let current = current.as_ref();
+    let parent = current.parent().context("missing parent")?.to_path_buf();
+
+    let mut name = String::new();
+    name.push('.');
+    name.push_str(Uuid::new_v4().to_string().as_str());
+    name.push_str(".dir.sbdb");
+
     let path = parent.join(&name);
     if current.exists() {
         let orig = parent.join(fs::read_link(current)?);
@@ -326,8 +348,11 @@ impl CowDirGaurd {
     /// location. The only way for the database to be left in an inconsistent state is if a
     /// catastrophic failure occurs between these two renames.
     pub fn commit(self) -> anyhow::Result<()> {
-        let mut ext = ".bak".to_string();
+        let mut ext = String::new();
+        ext.push('.');
         ext.push_str(Uuid::new_v4().to_string().as_str());
+        ext.push_str(".bak.sbdb");
+
         let bak = path_hidden_with_extension(&self.path, ext.as_str())?;
         fs::rename(&self.orig, &bak)?;
         if let Err(e) = fs::rename(&self.path, &self.orig) {
@@ -412,43 +437,30 @@ const FILE_SHARE_WRITE: u32 = 0x00000002;
 const FILE_SHARE_DELETE: u32 = 0x00000004;
 
 #[cfg(windows)]
-pub fn get_lock_and_queue<P: AsRef<Path>>(path: P) -> anyhow::Result<(File, File)> {
-    let path_lock = path_hidden_with_extension(&path, ".lock")?;
-    let path_queue = path_hidden_with_extension(&path, ".queue")?;
-
-    let lock = OpenOptions::new()
+pub fn open_lock_file<P: AsRef<Path>>(path: P) -> anyhow::Result<File> {
+    OpenOptions::new()
         .write(true)
         .create(true)
         .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
-        .open(path_lock)
-        .context("could not open lock file")?;
-
-    let queue = OpenOptions::new()
-        .write(true)
-        .create(true)
-        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
-        .open(path_queue)
-        .context("could not open queue file")?;
-
-    Ok((lock, queue))
+        .open(path)
+        .context("could not open lock file")
 }
 
-#[cfg(not(windows))]
-pub fn get_lock_and_queue<P: AsRef<Path>>(path: P) -> anyhow::Result<(File, File)> {
-    let path_lock = path_hidden_with_extension(&path, ".lock")?;
-    let path_queue = path_hidden_with_extension(&path, ".queue")?;
-
-    let lock = OpenOptions::new()
+#[cfg(unix)]
+pub fn open_lock_file<P: AsRef<Path>>(path: P) -> anyhow::Result<File> {
+    OpenOptions::new()
         .write(true)
         .create(true)
-        .open(path_lock)
-        .context("could not open lock file")?;
+        .open(path)
+        .context("could not open lock file")
+}
 
-    let queue = OpenOptions::new()
-        .write(true)
-        .create(true)
-        .open(path_queue)
-        .context("could not open queue file")?;
+pub fn open_lock_and_queue<P: AsRef<Path>>(path: P) -> anyhow::Result<(File, File)> {
+    let path_lock = path_hidden_with_extension(&path, ".lock.sbdb")?;
+    let path_queue = path_hidden_with_extension(&path, ".queue.sbdb")?;
+
+    let lock = open_lock_file(path_lock)?;
+    let queue = open_lock_file(path_queue)?;
 
     Ok((lock, queue))
 }
@@ -464,7 +476,7 @@ pub struct ReadLock {
 
 impl ReadLock {
     fn new<P: AsRef<Path>>(path: P) -> anyhow::Result<Self> {
-        let (lock, queue) = get_lock_and_queue(path)?;
+        let (lock, queue) = open_lock_and_queue(path)?;
 
         queue.lock()?;
         lock.lock_shared()?;
@@ -488,7 +500,7 @@ pub struct WriteLock {
 
 impl WriteLock {
     fn new<P: AsRef<Path>>(path: P) -> anyhow::Result<Self> {
-        let (lock, queue) = get_lock_and_queue(path)?;
+        let (lock, queue) = open_lock_and_queue(path)?;
 
         queue.lock()?;
         lock.lock()?;
