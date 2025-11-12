@@ -56,6 +56,10 @@ impl Client {
         TxBuilder::new(self.root.clone())
     }
 
+    /// After lots of modifications have happened in the database, its possible for lock files, temporary files
+    /// and backups to accumulate. This dynamically scans the database structure and safely removes files that
+    /// are no longer needed. If this is scanning a very large database, it may take a long time. It is recomended
+    /// that this procedure be run on a background thread/proccess.
     pub fn gc(&self) {
         fn gc(client: &Client, path: &PathBuf) -> anyhow::Result<()> {
             let mut children = Vec::new();
