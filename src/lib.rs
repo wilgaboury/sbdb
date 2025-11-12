@@ -2,12 +2,12 @@ use std::{
     collections::HashSet,
     ffi::OsString,
     fs::{self, File, OpenOptions},
-    path::{self, Path, PathBuf},
+    path::{Path, PathBuf},
 };
 
 use anyhow::{Context, anyhow};
+use rand::{Rng, SeedableRng, distr::Uniform, rngs::StdRng};
 use reflink_copy::reflink_or_copy;
-use uuid::Uuid;
 
 #[cfg(windows)]
 use std::os::windows::prelude::*;
@@ -57,7 +57,56 @@ impl Client {
     }
 
     pub fn gc(&self) {
-        // TODO
+        fn gc(client: &Client, path: &PathBuf) -> anyhow::Result<()> {
+            let mut children = Vec::new();
+            {
+                let _gaurd = client.read_dir(path)?;
+                for entry in fs::read_dir(path)? {
+                    let entry = entry?;
+                    let child_path = entry.path();
+                    let name = entry
+                        .file_name()
+                        .into_string()
+                        .map_err(|_| anyhow!("failed to convert"))?;
+                    if name.ends_with(".lock.sbdb") || name.ends_with(".queue.sbdb") {
+                        let orig_name: String =
+                            name.chars().skip(1).take_while(|c| *c != '.').collect();
+                        let orig_path = path.join(orig_name);
+                        if !orig_path.exists() {
+                            if let Err(e) = fs::remove_file(name) {
+                                // swallow error
+                                eprintln!("failed to remove file: {}", e);
+                            }
+                        }
+                    } else if name.ends_with(".dir.sbdb") {
+                        let orig_name: String =
+                            name.chars().skip(1).take_while(|c| *c != '.').collect();
+                        let orig_path = path.join(orig_name);
+                        if !orig_path.exists() || !orig_path.is_symlink() {
+                            if let Err(e) = fs::remove_dir_all(orig_path) {
+                                // swallow error
+                                eprintln!("failed to remove file: {}", e);
+                            }
+                        }
+                    } else if child_path.is_dir() {
+                        children.push(child_path.clone());
+                    }
+                    // TODO: handle non-atomic directory backups using write lock
+                }
+            }
+
+            for child in children {
+                if let Err(e) = gc(client, &child) {
+                    eprintln!("error occured during gc: {}", e);
+                }
+            }
+
+            Ok(())
+        }
+
+        if let Err(e) = gc(&self, &self.root) {
+            eprintln!("error occured during gc: {}", e);
+        }
     }
 }
 
@@ -162,16 +211,16 @@ pub struct Tx {
 }
 
 impl Tx {
-    pub fn file_cp<P: AsRef<Path>>(&self, orig: P) -> anyhow::Result<CowFileGaurd> {
-        file_cp(self.root.join(orig))
+    pub fn file_cow<P: AsRef<Path>>(&self, orig: P) -> anyhow::Result<CowFileGaurd> {
+        file_cow(self.root.join(orig))
     }
 
-    pub fn dir_cp<P: AsRef<Path>>(&self, orig: P) -> anyhow::Result<CowDirGaurd> {
-        dir_cp(self.root.join(orig))
+    pub fn dir_cow<P: AsRef<Path>>(&self, orig: P) -> anyhow::Result<CowDirGaurd> {
+        dir_cow(self.root.join(orig))
     }
 
-    pub fn dir_cp_atomic<P: AsRef<Path>>(&self, orig: P) -> anyhow::Result<CowAtomicDirGaurd> {
-        dir_cp_atomic(self.root.join(orig))
+    pub fn dir_cow_atomic<P: AsRef<Path>>(&self, orig: P) -> anyhow::Result<CowAtomicDirGaurd> {
+        dir_cow_atomic(self.root.join(orig))
     }
 }
 
@@ -232,11 +281,11 @@ pub struct FileWriteGaurd {
 
 impl FileWriteGaurd {
     pub fn cp(&self) -> anyhow::Result<CowFileGaurd> {
-        file_cp(&self.path)
+        file_cow(&self.path)
     }
 }
 
-pub fn file_cp<P: AsRef<Path>>(orig: P) -> anyhow::Result<CowFileGaurd> {
+pub fn file_cow<P: AsRef<Path>>(orig: P) -> anyhow::Result<CowFileGaurd> {
     let path = path_hidden_with_extension(&orig, ".tmp.sbdb")?;
     reflink_or_copy(&orig, &path)?;
     Ok(CowFileGaurd {
@@ -272,7 +321,7 @@ pub struct DirWriteGaurd {
 impl DirWriteGaurd {
     pub fn cp(&self) -> anyhow::Result<CowDirGaurd> {
         // TODO: convert atomic to normal
-        dir_cp(&self.path)
+        dir_cow(&self.path)
     }
 
     /// platform specific behavior:
@@ -281,16 +330,16 @@ impl DirWriteGaurd {
     /// or with escalated privlages. For that reason it should probably be avoided if you would
     /// like to have cross-platform support.
     pub fn cp_atomic(&self) -> anyhow::Result<CowAtomicDirGaurd> {
-        dir_cp_atomic(&self.path)
+        dir_cow_atomic(&self.path)
     }
 
     pub fn create_dir_atomic<P: AsRef<Path>>(&self, path: P) -> anyhow::Result<()> {
-        dir_cp_atomic(self.path.join(path))?.commit()?;
+        dir_cow_atomic(self.path.join(path))?.commit()?;
         Ok(())
     }
 }
 
-pub fn dir_cp<P: AsRef<Path>>(orig: P) -> anyhow::Result<CowDirGaurd> {
+pub fn dir_cow<P: AsRef<Path>>(orig: P) -> anyhow::Result<CowDirGaurd> {
     let path = path_hidden_with_extension(&orig, ".tmp.sbdb")?;
     copy_recursive(&orig, &path)?;
     Ok(CowDirGaurd {
@@ -303,13 +352,21 @@ fn strip_trailing_slash(path: PathBuf) -> PathBuf {
     path.components().as_path().to_path_buf()
 }
 
-pub fn dir_cp_atomic<P: AsRef<Path>>(current: P) -> anyhow::Result<CowAtomicDirGaurd> {
+pub fn dir_cow_atomic<P: AsRef<Path>>(current: P) -> anyhow::Result<CowAtomicDirGaurd> {
     let current = strip_trailing_slash(current.as_ref().to_path_buf());
     let parent = current.parent().context("missing parent")?.to_path_buf();
 
     let mut name = String::new();
     name.push('.');
-    name.push_str(Uuid::new_v4().to_string().as_str());
+    name.push_str(
+        current
+            .file_name()
+            .context("missing_filename")?
+            .to_str()
+            .context("could not convert os string")?,
+    );
+    name.push('.');
+    name.push_str(&puuid());
     name.push_str(".dir.sbdb");
 
     let path = parent.join(&name);
@@ -319,7 +376,6 @@ pub fn dir_cp_atomic<P: AsRef<Path>>(current: P) -> anyhow::Result<CowAtomicDirG
             copy_recursive(&orig, &path)?;
             Ok(CowAtomicDirGaurd {
                 current,
-                parent,
                 name,
                 path,
                 orig: Some(orig),
@@ -328,7 +384,6 @@ pub fn dir_cp_atomic<P: AsRef<Path>>(current: P) -> anyhow::Result<CowAtomicDirG
             copy_recursive(&current, &path)?;
             Ok(CowAtomicDirGaurd {
                 current,
-                parent,
                 name,
                 path,
                 orig: None,
@@ -338,12 +393,19 @@ pub fn dir_cp_atomic<P: AsRef<Path>>(current: P) -> anyhow::Result<CowAtomicDirG
         fs::create_dir_all(&path)?;
         Ok(CowAtomicDirGaurd {
             current,
-            parent,
             name,
             path,
             orig: None,
         })
     }
+}
+
+pub fn create_backup_ext() -> String {
+    let mut ext = String::new();
+    ext.push('.');
+    ext.push_str(&puuid());
+    ext.push_str(".bak.sbdb");
+    ext
 }
 
 pub struct CowDirGaurd {
@@ -358,11 +420,7 @@ impl CowDirGaurd {
     /// location. The only way for the database to be left in an inconsistent state is if a
     /// catastrophic failure occurs between these two renames.
     pub fn commit(self) -> anyhow::Result<()> {
-        let mut ext = String::new();
-        ext.push('.');
-        ext.push_str(Uuid::new_v4().to_string().as_str());
-        ext.push_str(".bak.sbdb");
-        let bak = path_hidden_with_extension(&self.path, ext.as_str())?;
+        let bak = path_hidden_with_extension(&self.path, &create_backup_ext())?;
 
         fs::rename(&self.orig, &bak)?;
         if let Err(e) = fs::rename(&self.path, &self.orig) {
@@ -379,7 +437,6 @@ impl CowDirGaurd {
 
 pub struct CowAtomicDirGaurd {
     current: PathBuf,
-    parent: PathBuf,
     name: String,
     pub path: PathBuf,
     orig: Option<PathBuf>,
@@ -397,16 +454,12 @@ impl CowAtomicDirGaurd {
 
         #[cfg(windows)]
         {
-            std::os::windows::fs::symlink_dir(self.path, &current_rel)?;
+            std::os::windows::fs::symlink_dir(&current_rel, &current_tmp)?;
         }
 
         let converting = self.current.exists() && self.current.is_dir();
         let bak = if converting {
-            let mut ext = String::new();
-            ext.push('.');
-            ext.push_str(Uuid::new_v4().to_string().as_str());
-            ext.push_str(".bak.sbdb");
-            let bak = path_hidden_with_extension(&self.path, ext.as_str())?;
+            let bak = path_hidden_with_extension(&self.path, &create_backup_ext())?;
             fs::rename(&self.current, &bak)?;
             Some(bak)
         } else {
@@ -583,6 +636,30 @@ fn copy_recursive(src: impl AsRef<Path>, dst: impl AsRef<Path>) -> anyhow::Resul
     Ok(())
 }
 
+/// Path-UUID
+///
+/// This function is for generating cross-platform universally unique identifiers
+/// specifically for usage in directory paths, meaning that they are shorter and
+/// more information dense than a standard hexidecimal UUID.
+pub fn puuid() -> String {
+    const LEN: usize = 24;
+    fn to_base_36(n: u8) -> char {
+        if n < 26 {
+            (b'A' + n) as char
+        } else {
+            (b'0' + (n - 26)) as char
+        }
+    }
+
+    let range = Uniform::new(0 as u8, 36 as u8).unwrap();
+    let mut rand = StdRng::from_os_rng();
+    let mut res = String::with_capacity(LEN);
+    for _ in 0..LEN {
+        res.push(to_base_36(rand.sample(&range)));
+    }
+    res
+}
+
 #[cfg(test)]
 mod test {
     use std::{
@@ -598,10 +675,9 @@ mod test {
 
     use anyhow::Context;
     use path_dsl::path;
-    use rand::Rng;
-    use uuid::Uuid;
+    use rand::{Rng, SeedableRng, rngs::SmallRng};
 
-    use crate::{Client, ReadLock, WriteLock};
+    use crate::{Client, ReadLock, WriteLock, puuid};
 
     struct TestClient {
         pub client: Client,
@@ -610,8 +686,7 @@ mod test {
 
     impl TestClient {
         pub fn new(name: &str) -> anyhow::Result<Self> {
-            let root = std::env::temp_dir()
-                .join(name.to_string() + "-" + Uuid::new_v4().to_string().as_str());
+            let root = std::env::temp_dir().join(name.to_string() + "-" + &puuid());
             Ok(TestClient {
                 client: Client::new(&root)?,
                 root,
@@ -643,19 +718,19 @@ mod test {
             let wcnt = wcnt_orig.clone();
             let rec = rec_orig.clone();
             threads.push(thread::spawn(move || {
-                let mut rng = rand::thread_rng();
-                if rng.gen_bool(0.5) {
-                    thread::sleep(Duration::from_millis(rng.gen_range(1..=10)));
+                let mut rng = SmallRng::from_os_rng();
+                if rng.random_bool(0.5) {
+                    thread::sleep(Duration::from_millis(rng.random_range(1..=10)));
                     let _gaurd = ReadLock::new(tmp_file_path).unwrap();
                     // rec.lock().unwrap().push('r');
                     rcnt.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
                     if wcnt.load(Ordering::Acquire) > 0 {
                         panic!("can't have readers and writers")
                     }
-                    thread::sleep(Duration::from_millis(rng.gen_range(1..=10)));
+                    thread::sleep(Duration::from_millis(rng.random_range(1..=10)));
                     rcnt.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
                 } else {
-                    thread::sleep(Duration::from_millis(rng.gen_range(1..=10)));
+                    thread::sleep(Duration::from_millis(rng.random_range(1..=10)));
                     let _gaurd = WriteLock::new(tmp_file_path).unwrap();
                     // rec.lock().unwrap().push('w');
                     let wcnt_sn = wcnt.fetch_add(1, Ordering::AcqRel);
@@ -666,7 +741,7 @@ mod test {
                     if rcnt_sn > 0 {
                         panic!("can't have readers and writers, num: {}", rcnt_sn);
                     }
-                    thread::sleep(Duration::from_millis(rng.gen_range(1..=50)));
+                    thread::sleep(Duration::from_millis(rng.random_range(1..=50)));
                     wcnt.fetch_sub(1, Ordering::AcqRel);
                 }
             }));
@@ -730,7 +805,7 @@ mod test {
                 .parse::<i64>()?;
             if n > 1 {
                 let n = if n % 2 == 0 { n / 2 } else { 3 * n + 1 };
-                let cp = tx.file_cp("collatz_out.txt")?;
+                let cp = tx.file_cow("collatz_out.txt")?;
                 fs::write(&cp.path, n.to_string())?;
                 cp.commit()?;
             }
@@ -740,8 +815,8 @@ mod test {
     }
 
     #[test]
-    fn test_dir_cp() -> anyhow::Result<()> {
-        let test_client = TestClient::new("test_dir_cp")?;
+    fn test_dir_cow() -> anyhow::Result<()> {
+        let test_client = TestClient::new("test_dir_cow")?;
         let db = &test_client.client;
 
         {
@@ -801,10 +876,10 @@ mod test {
 
     #[test]
     #[cfg(unix)]
-    fn test_dir_cp_atomic() -> anyhow::Result<()> {
-        use crate::dir_cp_atomic;
+    fn test_dir_cow_atomic() -> anyhow::Result<()> {
+        use crate::dir_cow_atomic;
 
-        let test_client = TestClient::new("test_dir_cp_atomic")?;
+        let test_client = TestClient::new("test_dir_cow_atomic")?;
         let db = &test_client.client;
 
         {
@@ -812,7 +887,7 @@ mod test {
             let dir = gaurd.cp_atomic()?;
             let nested_path = dir.path.join("nested");
             fs::create_dir(&nested_path)?;
-            dir_cp_atomic(&nested_path)?.commit()?;
+            dir_cow_atomic(&nested_path)?.commit()?;
             let test_path = nested_path.join("test.txt");
             File::create(&test_path)?;
             fs::write(&test_path, "test1")?;
@@ -872,7 +947,7 @@ mod test {
                 .write("nested/writes/write2.txt")
                 .write("nested/writes") // purposefully add more write protection than neccessary
                 .begin()?;
-            let cp = tx.dir_cp("nested/writes")?;
+            let cp = tx.dir_cow("nested/writes")?;
             let write1 = cp.path.join("write1.txt");
             let write2 = cp.path.join("write2.txt");
 
@@ -903,10 +978,10 @@ mod test {
 
     #[test]
     #[cfg(unix)]
-    fn test_tx_operations_atomic_cp() -> anyhow::Result<()> {
-        use crate::dir_cp_atomic;
+    fn test_tx_operations_atomic_cow() -> anyhow::Result<()> {
+        use crate::dir_cow_atomic;
 
-        let test_client = TestClient::new("test_tx_operations_atomic_cp")?;
+        let test_client = TestClient::new("test_tx_operations_atomic_cow")?;
         let db = &test_client.client;
 
         {
@@ -920,7 +995,7 @@ mod test {
             fs::create_dir_all(&nested)?;
             File::create(&read)?;
             fs::create_dir(&writes)?;
-            dir_cp_atomic(writes)?.commit()?;
+            dir_cow_atomic(writes)?.commit()?;
             File::create(&write1)?;
             File::create(&write2)?;
             fs::write(&read, "1")?;
@@ -937,7 +1012,7 @@ mod test {
                 .write("nested/writes/write2.txt")
                 .write("nested/writes") // purposefully add more write protection than neccessary
                 .begin()?;
-            let cp = tx.dir_cp_atomic("nested/writes")?;
+            let cp = tx.dir_cow_atomic("nested/writes")?;
             let write1 = cp.path.join("write1.txt");
             let write2 = cp.path.join("write2.txt");
 
