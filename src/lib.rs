@@ -280,7 +280,7 @@ pub struct FileWriteGaurd {
 }
 
 impl FileWriteGaurd {
-    pub fn cp(&self) -> anyhow::Result<CowFileGaurd> {
+    pub fn cow(&self) -> anyhow::Result<CowFileGaurd> {
         file_cow(&self.path)
     }
 }
@@ -319,7 +319,7 @@ pub struct DirWriteGaurd {
 }
 
 impl DirWriteGaurd {
-    pub fn cp(&self) -> anyhow::Result<CowDirGaurd> {
+    pub fn cow(&self) -> anyhow::Result<CowDirGaurd> {
         // TODO: convert atomic to normal
         dir_cow(&self.path)
     }
@@ -329,7 +329,7 @@ impl DirWriteGaurd {
     /// This feature uses symbolic links, which windows supports, but only in developer mode
     /// or with escalated privlages. For that reason it should probably be avoided if you would
     /// like to have cross-platform support.
-    pub fn cp_atomic(&self) -> anyhow::Result<CowAtomicDirGaurd> {
+    pub fn cow_atomic(&self) -> anyhow::Result<CowAtomicDirGaurd> {
         dir_cow_atomic(&self.path)
     }
 
@@ -781,7 +781,7 @@ mod test {
 
         {
             let gaurd = db.write_dir(path!("some" | "dir"))?;
-            let cp = gaurd.cp()?;
+            let cp = gaurd.cow()?;
             fs::create_dir(cp.path.join("new_dir"))?;
             File::create(cp.path.join("new_file"))?;
             cp.commit()?;
@@ -789,7 +789,7 @@ mod test {
 
         {
             let gaurd = db.write_file("test_write.txt")?;
-            let cp = gaurd.cp()?;
+            let cp = gaurd.cow()?;
             fs::write(&cp.path, "some content")?;
             cp.commit()?;
         }
@@ -821,7 +821,7 @@ mod test {
 
         {
             let gaurd = db.write_dir("")?;
-            let dir = gaurd.cp()?;
+            let dir = gaurd.cow()?;
             let dir1 = dir.path.join("dir1");
             let dir2 = dir.path.join("dir2");
             let test1 = dir1.join("test.txt");
@@ -847,7 +847,7 @@ mod test {
 
         {
             let gaurd = db.write_dir("")?;
-            let dir = gaurd.cp()?;
+            let dir = gaurd.cow()?;
             let dir1 = dir.path.join("dir1");
             let dir2 = dir.path.join("dir2");
             let dir3 = dir.path.join("dir3");
@@ -884,7 +884,7 @@ mod test {
 
         {
             let gaurd = db.write_dir("")?;
-            let dir = gaurd.cp_atomic()?;
+            let dir = gaurd.cow_atomic()?;
             let nested_path = dir.path.join("nested");
             fs::create_dir(&nested_path)?;
             dir_cow_atomic(&nested_path)?.commit()?;
@@ -901,7 +901,7 @@ mod test {
 
         {
             let gaurd = db.write_dir("")?;
-            let dir = gaurd.cp_atomic()?;
+            let dir = gaurd.cow_atomic()?;
             let test_path = dir.path.join("nested/test.txt");
             fs::write(&test_path, "test2")?;
             dir.commit()?;
@@ -922,7 +922,7 @@ mod test {
 
         {
             let gaurd = db.write_dir("")?;
-            let cp = gaurd.cp()?;
+            let cp = gaurd.cow()?;
             let nested = cp.path.join("nested");
             let read = nested.join("read.txt");
             let writes = nested.join("writes");
@@ -986,7 +986,7 @@ mod test {
 
         {
             let gaurd = db.write_dir("")?;
-            let cp = gaurd.cp()?;
+            let cp = gaurd.cow()?;
             let nested = cp.path.join("nested");
             let read = nested.join("read.txt");
             let writes = nested.join("writes");
