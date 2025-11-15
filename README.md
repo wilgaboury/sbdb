@@ -6,6 +6,8 @@
 
 A transactional, concurrent, embedded database that utilyzes the filesystem as it's storage engine.
 
+Personal Note: I could spend the time in the world perfecting this library, but I don't currently have a concrete use case so that would be a waste of time. For now this was just an interesting thought.
+
 If you are looking for a explination of how SubsidiaDB works, try reading the included article: [Turning the Filesystem into a Database](./explain.md).
 
 Documentation, examples, and more thorough testing are a WIP.
@@ -56,3 +58,9 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 ```
+
+### TODO
+
+- get rid of weird bimodal cow_atomic behavior, should have never added that
+- make kv store on top of library for performance testing against others
+- use fsync everywhere for durable storage
