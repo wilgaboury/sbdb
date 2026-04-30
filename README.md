@@ -8,7 +8,7 @@ A transactional, concurrent, embedded database that utilyzes the filesystem as i
 
 Personal Note: I could spend the time in the world perfecting this library, but I don't currently have a concrete use case so that would be a waste of time. For now this was just an interesting thought.
 
-If you are looking for a explination of how SubsidiaDB works, try reading the included article: [Turning the Filesystem into a Database](./explain.md).
+If you are looking for a explination of how SubsidiaDB works, reading my blog post: [Turning the Filesystem into a Database](https://blog.wilsworld.net/posts/2025_11_11-Turning_the_Filesystem_into_a_Database).
 
 Documentation, examples, and more thorough testing are a WIP.
 
